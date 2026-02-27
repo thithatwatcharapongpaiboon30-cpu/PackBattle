@@ -110,9 +110,16 @@ app.get("/api/rooms/:id", (req, res) => {
   const pId = req.query.playerId as string;
   if (pId) {
     const player = room.players.find((p: any) => p.id === pId);
-    if (player) player.lastSeen = Date.now();
+    if (player) {
+      player.lastSeen = Date.now();
+    } else {
+      console.log(`[Server] Player ${pId} not found in room ${room.id} during poll`);
+    }
+  } else {
+    console.log(`[Server] No playerId provided during poll for room ${room.id}`);
   }
 
+  checkRoundEnd(room);
   checkStateTransitions(room);
 
   res.json(getSanitizedRoom(room));
@@ -246,7 +253,7 @@ function getSanitizedRoom(room: any) {
       hasSelected: !!p.selectedPokemon || p.hasSkipped,
       hasSkipped: p.hasSkipped,
       isHost: p.isHost,
-      isOnline: (now - p.lastSeen) < 30000,
+      isOnline: (now - p.lastSeen) < 120000,
     })),
   };
 }
@@ -270,7 +277,9 @@ function startRound(room: any) {
 
 function checkRoundEnd(room: any) {
   if (room.status !== "PLAYING") return;
-  const allReady = room.players.every((p: any) => p.selectedPokemon || p.hasSkipped);
+  const activePlayers = room.players.filter((p: any) => (Date.now() - p.lastSeen) < 120000);
+  if (activePlayers.length === 0) return;
+  const allReady = activePlayers.every((p: any) => p.selectedPokemon || p.hasSkipped);
   if (allReady) {
     room.status = "RESOLVING";
     resolveRound(room);

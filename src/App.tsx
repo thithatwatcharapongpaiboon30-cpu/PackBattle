@@ -94,6 +94,20 @@ export default function App() {
           return;
         }
 
+        // Auto-rejoin if dropped from room (e.g. due to stale restore)
+        const amIInRoom = data.players.some((p: any) => p.id === myId);
+        if (!amIInRoom && data.status === 'LOBBY') {
+          await fetch('/api/rooms/join', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ roomId: room.id, playerName, playerId: myId })
+          });
+          return;
+        } else if (!amIInRoom && data.status !== 'LOBBY') {
+          // If game started, we can't rejoin easily without breaking state, so we just show disconnected
+          console.warn("Dropped from room during gameplay");
+        }
+
         // Handle transitions
         if (data.status === 'PLAYING' && lastStatus === 'LOBBY') {
           setIsSpinning(true);
