@@ -43,7 +43,10 @@ export async function getPokemonData(idOrName: string | number): Promise<Pokemon
 
 export async function getRandomPokemonByType(type: string, count: number): Promise<Pokemon[]> {
   const typeData = await fetchWithCache(`https://pokeapi.co/api/v2/type/${type}`);
-  const pokemonList = typeData.pokemon;
+  const pokemonList = typeData.pokemon.filter((p: any) => {
+    const name = p.pokemon.name.toLowerCase();
+    return !name.includes('-mega') && !name.includes('-gmax') && !name.includes('-dynamax');
+  });
   const results: Pokemon[] = [];
   
   for (let i = 0; i < count; i++) {

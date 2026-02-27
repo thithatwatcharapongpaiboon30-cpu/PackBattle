@@ -187,6 +187,7 @@ function getSanitizedRoom(room: any) {
     currentWheels: room.currentWheels,
     lastUpdate: room.lastUpdate,
     lastWinners: room.lastWinners,
+    lastPlays: room.lastPlays,
     players: room.players.map((p: any) => ({
       id: p.id,
       name: p.name,
@@ -259,6 +260,20 @@ function resolveRound(room: any) {
   }
 
   room.lastWinners = winners.map(p => p.id);
+  
+  room.lastPlays = room.players.map((p: any) => ({
+    playerId: p.id,
+    pokemon: p.selectedPokemon,
+    skipped: p.hasSkipped
+  }));
+
+  room.players.forEach((p: any) => {
+    if (p.selectedPokemon) {
+      const idx = p.collection.findIndex((poke: any) => poke.id === p.selectedPokemon.id);
+      if (idx !== -1) p.collection.splice(idx, 1);
+    }
+  });
+
   room.lastUpdate = Date.now();
 
   setTimeout(() => {
@@ -269,7 +284,7 @@ function resolveRound(room: any) {
       room.status = "FINISHED";
     }
     room.lastUpdate = Date.now();
-  }, 5000);
+  }, 8000);
 }
 
 function isCompliant(pokemon: any, twist: string) {

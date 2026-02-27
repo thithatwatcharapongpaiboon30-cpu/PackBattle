@@ -20,6 +20,12 @@ export interface GameState {
     stat: string;
     twist: string;
   } | null;
+  lastWinners?: string[];
+  lastPlays?: {
+    playerId: string;
+    pokemon: Pokemon | null;
+    skipped: boolean;
+  }[];
 }
 
 export interface Player {

@@ -627,40 +627,75 @@ export default function App() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/90 backdrop-blur-xl"
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/90 backdrop-blur-xl overflow-y-auto"
           >
             <motion.div 
               initial={{ scale: 0.9, y: 20 }}
               animate={{ scale: 1, y: 0 }}
-              className="w-full max-w-2xl bg-[#1a1a1a] border border-white/10 rounded-[3rem] p-12 text-center shadow-2xl"
+              className="w-full max-w-5xl bg-[#1a1a1a] border border-white/10 rounded-[3rem] p-8 md:p-12 text-center shadow-2xl my-8"
             >
-              <div className="w-24 h-24 bg-emerald-500 rounded-full flex items-center justify-center mx-auto mb-8 shadow-2xl shadow-emerald-500/20">
-                <Trophy className="w-12 h-12 text-black" />
+              <div className="w-20 h-20 bg-emerald-500 rounded-full flex items-center justify-center mx-auto mb-6 shadow-2xl shadow-emerald-500/20">
+                <Trophy className="w-10 h-10 text-black" />
               </div>
-              <h2 className="text-6xl font-black italic uppercase tracking-tighter mb-4">Round Results</h2>
+              <h2 className="text-4xl md:text-5xl font-black italic uppercase tracking-tighter mb-8">Round Results</h2>
               
-              <div className="space-y-4 mb-12">
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-12">
+                {room.lastPlays?.map((play, idx) => {
+                  const player = room.players.find(p => p.id === play.playerId);
+                  const isWinner = room.lastWinners?.includes(play.playerId);
+                  return (
+                    <div key={idx} className={cn(
+                      "bg-white/5 border rounded-2xl p-4 flex flex-col items-center relative",
+                      isWinner ? "border-emerald-500 shadow-lg shadow-emerald-500/20" : "border-white/10 opacity-70"
+                    )}>
+                      {isWinner && (
+                        <div className="absolute -top-3 -right-3 w-8 h-8 bg-emerald-500 rounded-full flex items-center justify-center shadow-lg">
+                          <Star className="w-4 h-4 text-black" />
+                        </div>
+                      )}
+                      <p className="text-xs font-bold uppercase tracking-widest text-white/60 mb-2 truncate w-full">{player?.name}</p>
+                      {play.skipped || !play.pokemon ? (
+                        <div className="flex-1 flex items-center justify-center py-4">
+                          <p className="text-[10px] font-bold uppercase tracking-widest text-white/30">Skipped</p>
+                        </div>
+                      ) : (
+                        <>
+                          <img src={play.pokemon.image} alt={play.pokemon.name} className="w-20 h-20 object-contain mb-2 drop-shadow-lg" />
+                          <p className="text-[10px] font-bold uppercase tracking-widest text-white/80 truncate w-full">{play.pokemon.name}</p>
+                          <div className="flex gap-1 mt-1 mb-2">
+                            {play.pokemon.types.map(t => (
+                              <div key={t} className="w-1.5 h-1.5 rounded-full bg-emerald-500" title={t} />
+                            ))}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="space-y-2 mb-8">
                 {winners.length > 0 ? (
                   winners.map(wId => {
                     const winner = room.players.find(p => p.id === wId);
                     return (
-                      <div key={wId} className="text-3xl font-black italic text-emerald-500 uppercase tracking-tighter">
+                      <div key={wId} className="text-2xl font-black italic text-emerald-500 uppercase tracking-tighter">
                         {winner?.name} Wins!
                       </div>
                     );
                   })
                 ) : (
-                  <div className="text-3xl font-black italic text-red-500 uppercase tracking-tighter">No Winners This Round</div>
+                  <div className="text-2xl font-black italic text-red-500 uppercase tracking-tighter">No Winners This Round</div>
                 )}
               </div>
 
-              <div className="bg-white/5 rounded-3xl p-6 border border-white/10">
+              <div className="bg-white/5 rounded-3xl p-6 border border-white/10 max-w-md mx-auto">
                 <p className="text-white/40 text-xs font-bold uppercase tracking-widest mb-2">Next round starting soon...</p>
                 <div className="w-full h-1 bg-white/10 rounded-full overflow-hidden">
                   <motion.div 
                     initial={{ width: "0%" }}
                     animate={{ width: "100%" }}
-                    transition={{ duration: 5 }}
+                    transition={{ duration: 8 }}
                     className="h-full bg-emerald-500"
                   />
                 </div>
