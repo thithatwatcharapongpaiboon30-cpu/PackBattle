@@ -526,7 +526,7 @@ export default function App() {
                       )}
                     >
                       <img 
-                        src={poke.sprites.front_default} 
+                        src={poke.image} 
                         alt={poke.name}
                         className="w-full h-auto drop-shadow-2xl group-hover:scale-110 transition-transform"
                       />
@@ -534,7 +534,7 @@ export default function App() {
                         <p className="text-[10px] font-bold uppercase tracking-widest text-white/40 truncate">{poke.name}</p>
                         <div className="flex justify-center gap-1 mt-1">
                           {poke.types.map(t => (
-                            <div key={t.type.name} className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                            <div key={t} className="w-1.5 h-1.5 rounded-full bg-emerald-500" title={t} />
                           ))}
                         </div>
                       </div>
@@ -553,34 +553,38 @@ export default function App() {
                 <ShoppingBag className="w-5 h-5" />
                 Pack Shop
               </h3>
-              <div className="space-y-4">
+              <div className="space-y-4 max-h-[500px] overflow-y-auto pr-2 scrollbar-hide">
                 <PackButton 
-                  title="Type Pack" 
-                  price={10} 
-                  icon={<Zap className="w-4 h-4" />}
-                  color="emerald"
-                  onClick={() => {
-                    const type = POKEMON_TYPES[Math.floor(Math.random() * POKEMON_TYPES.length)];
-                    buyPack(type, 10);
-                  }}
-                  disabled={me?.money < 10 || loadingPack}
+                  title="Legendary Pack" 
+                  price={20} 
+                  icon={<Star className="w-4 h-4" />}
+                  color="amber"
+                  onClick={() => buyPack('legendary', 20)}
+                  disabled={me?.money < 20 || loadingPack}
                 />
                 <PackButton 
                   title="Baby Pack" 
-                  price={25} 
+                  price={20} 
                   icon={<Heart className="w-4 h-4" />}
                   color="pink"
-                  onClick={() => buyPack('baby', 25)}
-                  disabled={me?.money < 25 || loadingPack}
+                  onClick={() => buyPack('baby', 20)}
+                  disabled={me?.money < 20 || loadingPack}
                 />
-                <PackButton 
-                  title="Legendary" 
-                  price={50} 
-                  icon={<Star className="w-4 h-4" />}
-                  color="amber"
-                  onClick={() => buyPack('legendary', 50)}
-                  disabled={me?.money < 50 || loadingPack}
-                />
+                
+                <div className="h-px w-full bg-white/10 my-4" />
+                <h4 className="text-xs font-bold uppercase tracking-widest text-white/40 mb-2">Type Packs ($10)</h4>
+                
+                {POKEMON_TYPES.map(type => (
+                  <PackButton 
+                    key={type}
+                    title={`${type} Pack`} 
+                    price={10} 
+                    icon={<Zap className="w-4 h-4" />}
+                    color="emerald"
+                    onClick={() => buyPack(type, 10)}
+                    disabled={me?.money < 10 || loadingPack}
+                  />
+                ))}
               </div>
             </div>
 
