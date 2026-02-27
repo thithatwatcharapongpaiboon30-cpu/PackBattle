@@ -1,0 +1,5 @@
+{
+  "name": "Poke Roulette",
+  "description": "A multiplayer Pokemon strategy game with randomized wheels, pack opening, and stat-based battles.",
+  "requestFramePermissions": []
+}
