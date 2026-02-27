@@ -42,10 +42,9 @@ export default function App() {
   const [showResult, setShowResult] = useState(false);
   const [winners, setWinners] = useState<string[]>([]);
   const [loadingPack, setLoadingPack] = useState(false);
+  const [socketReady, setSocketReady] = useState(false);
 
   const me = room?.players.find(p => p.id === myId);
-
-  const [socketReady, setSocketReady] = useState(false);
 
   useEffect(() => {
     if (playerName) localStorage.setItem('poke_name', playerName);
@@ -58,6 +57,7 @@ export default function App() {
   useEffect(() => {
     let ws: WebSocket;
     let reconnectTimeout: NodeJS.Timeout;
+    let heartbeatInterval: NodeJS.Timeout;
 
     const connect = () => {
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -66,11 +66,18 @@ export default function App() {
       ws.onopen = () => {
         console.log('[WS] Connected');
         setSocketReady(true);
+        // Start heartbeat
+        heartbeatInterval = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'SYNC' }));
+          }
+        }, 10000);
       };
 
       ws.onclose = () => {
         console.log('[WS] Disconnected. Reconnecting...');
         setSocketReady(false);
+        clearInterval(heartbeatInterval);
         reconnectTimeout = setTimeout(connect, 3000);
       };
 
@@ -119,6 +126,7 @@ export default function App() {
     return () => {
       if (ws) ws.close();
       clearTimeout(reconnectTimeout);
+      clearInterval(heartbeatInterval);
     };
   }, []);
 
@@ -131,6 +139,14 @@ export default function App() {
       type: 'JOIN_ROOM',
       payload: { roomId: rId, playerName: pName, playerId: myId }
     }));
+  };
+
+  const leaveRoom = () => {
+    if (socket?.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: 'LEAVE_ROOM' }));
+    }
+    setIsJoined(false);
+    setRoom(null);
   };
 
   const generateRoomId = () => {
@@ -341,8 +357,16 @@ export default function App() {
               </div>
             )}
             {!me?.isHost && (
-              <div className="bg-white/5 border border-white/10 text-white/40 px-6 py-4 rounded-2xl text-xs font-bold uppercase tracking-widest">
-                Waiting for host to start...
+              <div className="flex flex-col items-end gap-2">
+                <button 
+                  onClick={leaveRoom}
+                  className="bg-white/5 hover:bg-white/10 text-white/40 border border-white/10 font-bold px-4 py-2 rounded-xl text-xs transition-all active:scale-95"
+                >
+                  LEAVE LOBBY
+                </button>
+                <div className="bg-white/5 border border-white/10 text-white/40 px-6 py-4 rounded-2xl text-xs font-bold uppercase tracking-widest">
+                  Waiting for host to start...
+                </div>
               </div>
             )}
           </div>
@@ -354,17 +378,25 @@ export default function App() {
                 initial={{ opacity: 0, scale: 0.9 }}
                 animate={{ opacity: 1, scale: 1 }}
                 transition={{ delay: idx * 0.1 }}
-                className="bg-[#1a1a1a] border border-white/10 p-6 rounded-3xl flex items-center gap-4"
+                className={cn(
+                  "bg-[#1a1a1a] border p-6 rounded-3xl flex items-center gap-4 transition-colors",
+                  player.isOnline ? "border-white/10" : "border-red-500/20 opacity-60"
+                )}
               >
-                <div className="w-12 h-12 bg-white/5 rounded-2xl flex items-center justify-center font-bold text-xl text-white/30">
+                <div className="w-12 h-12 bg-white/5 rounded-2xl flex items-center justify-center font-bold text-xl text-white/30 relative">
                   {idx + 1}
+                  <div className={cn(
+                    "absolute -top-1 -right-1 w-3 h-3 rounded-full border-2 border-[#1a1a1a]",
+                    player.isOnline ? "bg-emerald-500" : "bg-red-500"
+                  )} />
                 </div>
                 <div>
-                  <h3 className="font-bold text-lg">
-                    {player.name} {player.isHost && <span className="text-emerald-500 text-xs ml-2">(Host)</span>}
+                  <h3 className="font-bold text-lg flex items-center gap-2">
+                    {player.name} 
+                    {player.isHost && <span className="text-emerald-500 text-[10px] bg-emerald-500/10 px-2 py-0.5 rounded-full uppercase tracking-widest">Host</span>}
                   </h3>
                   <p className="text-xs text-white/40 uppercase tracking-widest">
-                    {player.id === me?.id ? "You" : "Ready to Rumble"}
+                    {player.id === me?.id ? "You" : (player.isOnline ? "Ready to Rumble" : "Disconnected")}
                   </p>
                 </div>
               </motion.div>

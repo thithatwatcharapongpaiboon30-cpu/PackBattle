@@ -26,7 +26,10 @@ async function startServer() {
     ws.on("pong", () => { isAlive = true; });
 
     const pingInterval = setInterval(() => {
-      if (!isAlive) return ws.terminate();
+      if (!isAlive) {
+        console.log(`[WS] Terminating inactive connection for player ${connectionPlayerId}`);
+        return ws.terminate();
+      }
       isAlive = false;
       ws.ping();
     }, 30000);
@@ -61,15 +64,23 @@ async function startServer() {
 
             const room = rooms.get(cleanRoomId);
             
-            // Rejoin logic: check if player already exists by ID or Name
-            let player = room.players.find((p: any) => (existingId && p.id === existingId) || p.name === cleanPlayerName);
+            // Rejoin logic: check if player already exists by ID
+            let player = room.players.find((p: any) => existingId && p.id === existingId);
 
             if (player) {
               // Update existing player's socket
               player.ws = ws;
+              player.name = cleanPlayerName; // Allow name update on rejoin
               connectionPlayerId = player.id;
-              console.log(`[Room] ${cleanPlayerName} rejoined ${cleanRoomId}`);
+              console.log(`[Room] ${cleanPlayerName} (${player.id}) rejoined ${cleanRoomId}`);
             } else {
+              // Check if name is taken by an ACTIVE player
+              const nameTaken = room.players.some((p: any) => p.name === cleanPlayerName && p.ws.readyState === WebSocket.OPEN);
+              if (nameTaken) {
+                ws.send(JSON.stringify({ type: "ERROR", payload: "Name already taken in this room" }));
+                return;
+              }
+
               if (room.players.length >= 6) {
                 ws.send(JSON.stringify({ type: "ERROR", payload: "Room is full" }));
                 return;
@@ -79,7 +90,7 @@ async function startServer() {
                 return;
               }
 
-              const newId = existingId || Math.random().toString(36).substr(2, 9);
+              const newId = Math.random().toString(36).substr(2, 9);
               player = {
                 id: newId,
                 name: cleanPlayerName,
@@ -93,7 +104,7 @@ async function startServer() {
               };
               room.players.push(player);
               connectionPlayerId = newId;
-              console.log(`[Room] ${cleanPlayerName} joined ${cleanRoomId}`);
+              console.log(`[Room] ${cleanPlayerName} (${newId}) joined ${cleanRoomId}`);
             }
 
             connectionRoomId = cleanRoomId;
@@ -107,6 +118,26 @@ async function startServer() {
               type: "ROOM_UPDATED",
               payload: getSanitizedRoom(room),
             });
+            break;
+          }
+
+          case "LEAVE_ROOM": {
+            if (connectionRoomId && connectionPlayerId) {
+              const room = rooms.get(connectionRoomId);
+              if (room) {
+                room.players = room.players.filter((p: any) => p.id !== connectionPlayerId);
+                if (room.players.length === 0) {
+                  rooms.delete(connectionRoomId);
+                } else {
+                  if (!room.players.some((p: any) => p.isHost)) {
+                    room.players[0].isHost = true;
+                  }
+                  broadcast(connectionRoomId, { type: "ROOM_UPDATED", payload: getSanitizedRoom(room) });
+                }
+              }
+              connectionRoomId = null;
+              connectionPlayerId = null;
+            }
             break;
           }
 
@@ -172,12 +203,12 @@ async function startServer() {
     ws.on("close", () => {
       clearInterval(pingInterval);
       if (connectionRoomId && connectionPlayerId) {
+        console.log(`[WS] Player ${connectionPlayerId} connection closed for room ${connectionRoomId}`);
+        // We don't remove the player immediately to allow for rejoin
+        // But we broadcast an update so others know they might be "offline"
         const room = rooms.get(connectionRoomId);
         if (room) {
-          // We don't immediately remove the player to allow for rejoin
-          // But we should notify others that they are "offline" if we had that state
-          // For now, let's keep them in the list so the game doesn't break
-          console.log(`[WS] Player ${connectionPlayerId} disconnected from ${connectionRoomId}`);
+          broadcast(connectionRoomId, { type: "ROOM_UPDATED", payload: getSanitizedRoom(room) });
         }
       }
     });
@@ -189,14 +220,18 @@ async function startServer() {
     const data = JSON.stringify(message);
     room.players.forEach((p: any) => {
       if (p.ws.readyState === WebSocket.OPEN) {
-        p.ws.send(data);
+        try {
+          p.ws.send(data);
+        } catch (e) {
+          console.error(`[WS] Failed to send to ${p.name}:`, e);
+        }
       }
     });
   }
 
   function getSanitizedRoom(room: any) {
     if (!room) return null;
-    const sanitized = {
+    return {
       id: room.id,
       status: room.status,
       round: room.round,
@@ -211,9 +246,9 @@ async function startServer() {
         hasSelected: !!p.selectedPokemon || p.hasSkipped,
         hasSkipped: p.hasSkipped,
         isHost: p.isHost,
+        isOnline: p.ws.readyState === WebSocket.OPEN,
       })),
     };
-    return sanitized;
   }
 
   function startRound(room: any) {
