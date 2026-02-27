@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence } from 'motion/react';
 import { 
   Trophy, 
   Users, 
@@ -28,11 +28,10 @@ function cn(...inputs: ClassValue[]) {
 
 const POKEMON_TYPES = [
   'fire', 'water', 'grass', 'electric', 'ice', 'fighting', 'poison', 'ground', 
-  'flying', 'psychic', 'bug', 'rock', 'ghost', 'dragon', 'dark', 'steel', 'fairy'
+  'flying', 'psychic', 'bug', 'rock', 'ghost', 'dragon', 'steel', 'fairy'
 ];
 
 export default function App() {
-  const [socket, setSocket] = useState<WebSocket | null>(null);
   const [room, setRoom] = useState<GameState | null>(null);
   const [playerName, setPlayerName] = useState(() => localStorage.getItem('poke_name') || '');
   const [roomId, setRoomId] = useState('');
@@ -42,7 +41,7 @@ export default function App() {
   const [showResult, setShowResult] = useState(false);
   const [winners, setWinners] = useState<string[]>([]);
   const [loadingPack, setLoadingPack] = useState(false);
-  const [socketReady, setSocketReady] = useState(false);
+  const [socketReady, setSocketReady] = useState(true);
 
   const me = room?.players.find(p => p.id === myId);
 
@@ -54,137 +53,145 @@ export default function App() {
     if (myId) localStorage.setItem('poke_id', myId);
   }, [myId]);
 
+  // Polling for state updates
   useEffect(() => {
-    let ws: WebSocket;
-    let reconnectTimeout: NodeJS.Timeout;
-    let heartbeatInterval: NodeJS.Timeout;
+    if (!isJoined || !room?.id) return;
 
-    const connect = () => {
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      ws = new WebSocket(`${protocol}//${window.location.host}`);
-      
-      ws.onopen = () => {
-        console.log('[WS] Connected');
-        setSocketReady(true);
-        // Start heartbeat
-        heartbeatInterval = setInterval(() => {
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: 'SYNC' }));
-          }
-        }, 10000);
-      };
+    let lastRound = room.round;
+    let lastStatus = room.status;
 
-      ws.onclose = () => {
-        console.log('[WS] Disconnected. Reconnecting...');
-        setSocketReady(false);
-        clearInterval(heartbeatInterval);
-        reconnectTimeout = setTimeout(connect, 3000);
-      };
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/rooms/${room.id}?playerId=${myId}`);
+        if (res.status === 404) {
+          alert("Room no longer exists");
+          setIsJoined(false);
+          setRoom(null);
+          return;
+        }
+        const data = await res.json();
+        
+        // Handle transitions
+        if (data.status === 'PLAYING' && lastStatus === 'LOBBY') {
+          setIsSpinning(true);
+          setShowResult(false);
+          setTimeout(() => setIsSpinning(false), 3000);
+        } else if (data.round > lastRound) {
+          setIsSpinning(true);
+          setShowResult(false);
+          setTimeout(() => setIsSpinning(false), 3000);
+        }
 
-      ws.onmessage = (event) => {
-        try {
-          const message = JSON.parse(event.data);
-          switch (message.type) {
-            case 'JOINED':
-              setMyId(message.payload.playerId);
-              setRoom(message.payload.room);
-              setIsJoined(true);
-              break;
-            case 'ROOM_UPDATED':
-              setRoom(message.payload);
-              break;
-            case 'ROOM_DELETED':
-              alert("Room deleted by host");
-              setIsJoined(false);
-              setRoom(null);
-              break;
-            case 'ROUND_STARTED':
-              setRoom(message.payload.room);
-              setIsSpinning(true);
-              setShowResult(false);
-              setTimeout(() => setIsSpinning(false), 3000);
-              break;
-            case 'ROUND_RESOLVED':
-              setWinners(message.payload.winners);
-              setShowResult(true);
-              setRoom(message.payload.room);
-              break;
-            case 'GAME_FINISHED':
-              setRoom(message.payload);
-              break;
-            case 'ERROR':
-              alert(message.payload);
-              break;
-          }
-        } catch (e) { console.error(e); }
-      };
+        if (data.lastWinners) {
+          setWinners(data.lastWinners);
+          setShowResult(data.players.every((p: any) => p.hasSelected) && data.status !== 'LOBBY');
+        }
 
-      setSocket(ws);
+        setRoom(data);
+        lastRound = data.round;
+        lastStatus = data.status;
+      } catch (e) {
+        console.error("Polling error:", e);
+      }
     };
 
-    connect();
-    return () => {
-      if (ws) ws.close();
-      clearTimeout(reconnectTimeout);
-      clearInterval(heartbeatInterval);
-    };
-  }, []);
+    const interval = setInterval(poll, 2000);
+    return () => clearInterval(interval);
+  }, [isJoined, room?.id, myId]);
 
-  const joinRoom = (id?: string) => {
+  const joinRoom = async (id?: string) => {
     const rId = (id || roomId).trim().toUpperCase();
     const pName = playerName.trim();
-    if (!rId || !pName || !socketReady) return;
+    if (!rId || !pName) {
+      alert("Please enter both your name and a lobby code.");
+      return;
+    }
 
-    socket?.send(JSON.stringify({
-      type: 'JOIN_ROOM',
-      payload: { roomId: rId, playerName: pName, playerId: myId }
-    }));
+    try {
+      const res = await fetch('/api/rooms/join', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ roomId: rId, playerName: pName, playerId: myId })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setMyId(data.playerId);
+        setRoom(data.room);
+        setIsJoined(true);
+      } else {
+        alert(data.error || "Failed to join room");
+      }
+    } catch (e) {
+      alert("Server connection error. Please try again.");
+    }
   };
 
-  const leaveRoom = () => {
-    if (socket?.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({ type: 'LEAVE_ROOM' }));
+  const createRoom = async () => {
+    const pName = playerName.trim();
+    if (!pName) {
+      alert("Please enter your name first");
+      return;
     }
+
+    try {
+      const res = await fetch('/api/rooms/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ playerName: pName, playerId: myId })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setMyId(data.playerId);
+        setRoom(data.room);
+        setIsJoined(true);
+      } else {
+        alert(data.error || "Failed to create room");
+      }
+    } catch (e) {
+      alert("Server connection error. Please try again.");
+    }
+  };
+
+  const leaveRoom = async () => {
+    await fetch(`/api/rooms/${room?.id}/action`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ playerId: myId, type: 'LEAVE_ROOM' })
+    });
     setIsJoined(false);
     setRoom(null);
   };
 
-  const generateRoomId = () => {
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-    let result = '';
-    for (let i = 0; i < 6; i++) {
-      result += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    setRoomId(result);
-    return result;
+  const startGame = async () => {
+    await fetch(`/api/rooms/${room?.id}/action`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ playerId: myId, type: 'START_GAME' })
+    });
   };
 
-  const createRoom = () => {
-    if (!playerName.trim()) {
-      alert("Please enter your name first");
-      return;
-    }
-    const newId = generateRoomId();
-    joinRoom(newId);
-  };
-
-  const startGame = () => {
-    if (socket && socket.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({ type: 'START_GAME' }));
-    }
-  };
-
-  const deleteRoom = () => {
-    if (socket && socket.readyState === WebSocket.OPEN) {
-      if (confirm("Are you sure you want to delete this lobby?")) {
-        socket.send(JSON.stringify({ type: 'DELETE_ROOM' }));
+  const deleteRoom = async () => {
+    if (!myId || !room?.id) return;
+    if (confirm("Are you sure you want to delete this lobby? This will kick all players.")) {
+      try {
+        const res = await fetch(`/api/rooms/${room.id}?playerId=${myId}`, {
+          method: 'DELETE'
+        });
+        if (res.ok) {
+          setIsJoined(false);
+          setRoom(null);
+        } else {
+          const data = await res.json();
+          alert(data.error || "Failed to delete room");
+        }
+      } catch (e) {
+        alert("Connection error. Could not delete lobby.");
       }
     }
   };
 
   const buyPack = async (type: string, cost: number) => {
     if (loadingPack) return;
-    if (!socket || socket.readyState !== WebSocket.OPEN) return;
     setLoadingPack(true);
     try {
       let pokemon: Pokemon[] = [];
@@ -195,24 +202,37 @@ export default function App() {
       } else {
         pokemon = await getRandomPokemonByType(type, 3);
       }
-      if (socket && socket.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify({
-          type: 'BUY_PACK',
-          payload: { pokemon, cost }
-        }));
-      }
+      
+      await fetch(`/api/rooms/${room?.id}/action`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          playerId: myId, 
+          type: 'BUY_PACK', 
+          payload: { cost, pokemon } 
+        })
+      });
+    } catch (e) {
+      console.error(e);
     } finally {
       setLoadingPack(false);
     }
   };
 
-  const selectPokemon = (pokemon: Pokemon | null, skipped = false) => {
-    if (socket && socket.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({
-        type: 'SELECT_POKEMON',
-        payload: { pokemon, skipped }
-      }));
-    }
+  const selectPokemon = async (pokemon: Pokemon | null, skipped = false) => {
+    await fetch(`/api/rooms/${room?.id}/action`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ 
+        playerId: myId, 
+        type: 'SELECT_POKEMON', 
+        payload: { pokemon, skipped } 
+      })
+    });
+  };
+
+  const syncState = () => {
+    // Polling handles this automatically
   };
 
   if (!isJoined) {
@@ -275,12 +295,12 @@ export default function App() {
                     value={roomId}
                     onChange={(e) => setRoomId(e.target.value.toUpperCase())}
                     placeholder="Enter code..."
-                    className="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-3 focus:outline-none focus:border-red-500 transition-colors uppercase"
+                    className="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-3 focus:outline-none focus:border-emerald-500 transition-colors uppercase"
                   />
                   <button 
                     onClick={() => joinRoom()}
                     disabled={!socketReady}
-                    className="bg-red-600 hover:bg-red-700 text-white font-bold px-6 rounded-xl transition-all active:scale-95 shadow-lg shadow-red-900/20 flex items-center justify-center gap-2 disabled:opacity-50"
+                    className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-6 rounded-xl transition-all active:scale-95 shadow-lg shadow-emerald-900/20 flex items-center justify-center gap-2 disabled:opacity-50"
                   >
                     JOIN
                   </button>
@@ -296,17 +316,11 @@ export default function App() {
   if (isJoined && !room) {
     return (
       <div className="min-h-screen bg-[#121212] flex flex-col items-center justify-center text-white">
-        <div className="w-12 h-12 border-4 border-red-500 border-t-transparent rounded-full animate-spin mb-4" />
+        <div className="w-12 h-12 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin mb-4" />
         <p className="font-black uppercase tracking-widest italic">Joining Lobby...</p>
       </div>
     );
   }
-
-  const syncState = () => {
-    if (socketReady && socket?.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({ type: 'SYNC' }));
-    }
-  };
 
   if (!room) {
     return (
@@ -401,349 +415,284 @@ export default function App() {
                 </div>
               </motion.div>
             ))}
-            {Array.from({ length: 6 - room.players.length }).map((_, idx) => (
-              <div key={idx} className="border border-dashed border-white/10 p-6 rounded-3xl flex items-center justify-center text-white/10 uppercase tracking-widest font-bold text-sm">
-                Waiting...
-              </div>
-            ))}
           </div>
         </div>
-      </div>
-    );
-  }
-
-  if (room?.status === 'FINISHED') {
-    const sortedPlayers = [...room.players].sort((a, b) => b.points - a.points);
-    return (
-      <div className="min-h-screen bg-[#121212] text-white p-8 flex flex-col items-center justify-center">
-        <motion.div 
-          initial={{ scale: 0.8, opacity: 0 }}
-          animate={{ scale: 1, opacity: 1 }}
-          className="max-w-2xl w-full bg-[#1a1a1a] border border-white/10 rounded-[40px] p-12 text-center shadow-2xl"
-        >
-          <Trophy className="w-24 h-24 text-yellow-500 mx-auto mb-6" />
-          <h2 className="text-6xl font-black italic uppercase tracking-tighter mb-8">Final Standings</h2>
-          <div className="space-y-4">
-            {sortedPlayers.map((p, idx) => (
-              <div key={p.id} className={cn(
-                "flex items-center justify-between p-6 rounded-3xl border",
-                idx === 0 ? "bg-yellow-500/10 border-yellow-500/50" : "bg-white/5 border-white/10"
-              )}>
-                <div className="flex items-center gap-4">
-                  <span className="text-2xl font-black italic text-white/20">#{idx + 1}</span>
-                  <span className="text-2xl font-bold">{p.name}</span>
-                </div>
-                <span className="text-3xl font-black">{p.points} PTS</span>
-              </div>
-            ))}
-          </div>
-          <button 
-            onClick={() => window.location.reload()}
-            className="mt-12 text-white/40 hover:text-white transition-colors uppercase tracking-widest font-bold text-sm flex items-center gap-2 mx-auto"
-          >
-            <RotateCcw className="w-4 h-4" />
-            Back to Menu
-          </button>
-        </motion.div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-[#0a0a0a] text-white font-sans selection:bg-red-500/30">
-      {/* Header */}
-      <header className="border-b border-white/5 bg-black/40 backdrop-blur-xl sticky top-0 z-50">
-        <div className="max-w-[1600px] mx-auto px-8 h-20 flex items-center justify-between">
-          <div className="flex items-center gap-8">
-            <h1 className="text-2xl font-black italic uppercase tracking-tighter flex items-center gap-2">
-              <div className="w-8 h-8 bg-red-600 rounded-full flex items-center justify-center">
-                <RotateCcw className="w-4 h-4" />
+    <div className="min-h-screen bg-[#121212] text-white p-4 md:p-8">
+      <div className="max-w-7xl mx-auto">
+        {/* Game Header */}
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-8">
+          <div>
+            <div className="flex items-center gap-3">
+              <h2 className="text-3xl font-black italic uppercase tracking-tighter">Round {room.round} / {room.maxRounds}</h2>
+              <div className="px-3 py-1 bg-emerald-500/10 border border-emerald-500/20 rounded-full text-emerald-500 text-[10px] font-bold uppercase tracking-widest">
+                {room.status}
               </div>
-              Poke Roulette
-            </h1>
-            <div className="h-8 w-px bg-white/10" />
-            <div className="flex items-center gap-4">
-              <div className="flex flex-col">
-                <span className="text-[10px] uppercase tracking-widest font-bold text-white/30">Round</span>
-                <span className="text-xl font-black italic">{room.round} / {room.maxRounds}</span>
+            </div>
+            <p className="text-white/40 text-xs uppercase tracking-widest mt-1">Lobby: {room.id}</p>
+          </div>
+
+          <div className="flex items-center gap-4 bg-white/5 p-4 rounded-2xl border border-white/10">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 bg-emerald-500 rounded-lg flex items-center justify-center">
+                <Coins className="w-5 h-5 text-black" />
+              </div>
+              <div>
+                <p className="text-[10px] text-white/40 uppercase font-bold leading-none">Your Balance</p>
+                <p className="text-xl font-black italic">${me?.money}</p>
+              </div>
+            </div>
+            <div className="w-px h-8 bg-white/10" />
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 bg-amber-500 rounded-lg flex items-center justify-center">
+                <Star className="w-5 h-5 text-black" />
+              </div>
+              <div>
+                <p className="text-[10px] text-white/40 uppercase font-bold leading-none">Your Points</p>
+                <p className="text-xl font-black italic">{me?.points}</p>
               </div>
             </div>
           </div>
+        </div>
 
-          <div className="flex items-center gap-6">
-            {room.players.map(p => (
-              <div key={p.id} className="flex flex-col items-end">
-                <span className={cn(
-                  "text-[10px] uppercase tracking-widest font-bold",
-                  p.id === me?.id ? "text-red-500" : "text-white/30"
-                )}>
-                  {p.name} {p.id === me?.id && "(You)"}
-                </span>
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-bold">{p.points} PTS</span>
-                  <div className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+          {/* Left Column: Wheels & Selection */}
+          <div className="lg:col-span-8 space-y-8">
+            {/* Wheels Section */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <motion.div 
+                animate={isSpinning ? { rotateX: [0, 360, 720, 1080] } : {}}
+                className="bg-gradient-to-br from-emerald-600 to-emerald-800 p-6 rounded-3xl shadow-xl relative overflow-hidden group"
+              >
+                <div className="absolute top-0 right-0 p-8 opacity-10 group-hover:scale-110 transition-transform">
+                  <Zap className="w-32 h-32" />
                 </div>
+                <p className="text-[10px] uppercase font-bold tracking-widest text-emerald-200 mb-2">Stat Wheel</p>
+                <h3 className="text-3xl font-black italic uppercase tracking-tighter leading-none">
+                  {isSpinning ? "Spinning..." : room.currentWheels?.stat}
+                </h3>
+              </motion.div>
+
+              <motion.div 
+                animate={isSpinning ? { rotateX: [0, -360, -720, -1080] } : {}}
+                className="bg-gradient-to-br from-amber-500 to-amber-700 p-6 rounded-3xl shadow-xl relative overflow-hidden group"
+              >
+                <div className="absolute top-0 right-0 p-8 opacity-10 group-hover:scale-110 transition-transform">
+                  <Shield className="w-32 h-32" />
+                </div>
+                <p className="text-[10px] uppercase font-bold tracking-widest text-amber-200 mb-2">Twist Wheel</p>
+                <h3 className="text-3xl font-black italic uppercase tracking-tighter leading-none">
+                  {isSpinning ? "Spinning..." : room.currentWheels?.twist}
+                </h3>
+              </motion.div>
+            </div>
+
+            {/* Selection Area */}
+            <div className="bg-[#1a1a1a] border border-white/10 rounded-[2.5rem] p-8">
+              <div className="flex justify-between items-center mb-6">
+                <h3 className="text-xl font-black italic uppercase tracking-tighter">Your Collection</h3>
+                <button 
+                  onClick={() => selectPokemon(null, true)}
+                  disabled={me?.hasSelected}
+                  className="text-[10px] font-bold uppercase tracking-widest text-white/30 hover:text-white transition-colors disabled:opacity-0"
+                >
+                  Skip this round
+                </button>
               </div>
-            ))}
+
+              {me?.collection.length === 0 ? (
+                <div className="h-64 flex flex-col items-center justify-center border-2 border-dashed border-white/5 rounded-3xl text-white/20">
+                  <ShoppingBag className="w-12 h-12 mb-4 opacity-20" />
+                  <p className="font-bold uppercase tracking-widest text-sm">Your collection is empty</p>
+                  <p className="text-xs mt-1">Buy a pack to get started</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+                  {me?.collection.map((poke, i) => (
+                    <motion.button
+                      key={`${poke.id}-${i}`}
+                      whileHover={{ scale: 1.05 }}
+                      whileTap={{ scale: 0.95 }}
+                      onClick={() => selectPokemon(poke)}
+                      disabled={me?.hasSelected}
+                      className={cn(
+                        "relative aspect-[3/4] rounded-2xl p-4 flex flex-col items-center justify-between transition-all group overflow-hidden",
+                        me?.hasSelected ? "opacity-50 grayscale cursor-not-allowed" : "hover:shadow-2xl hover:shadow-emerald-500/20",
+                        "bg-white/5 border border-white/10"
+                      )}
+                    >
+                      <img 
+                        src={poke.sprites.front_default} 
+                        alt={poke.name}
+                        className="w-full h-auto drop-shadow-2xl group-hover:scale-110 transition-transform"
+                      />
+                      <div className="text-center w-full">
+                        <p className="text-[10px] font-bold uppercase tracking-widest text-white/40 truncate">{poke.name}</p>
+                        <div className="flex justify-center gap-1 mt-1">
+                          {poke.types.map(t => (
+                            <div key={t.type.name} className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                          ))}
+                        </div>
+                      </div>
+                    </motion.button>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
-        </div>
-      </header>
 
-      <main className="max-w-[1600px] mx-auto p-8 grid grid-cols-1 lg:grid-cols-12 gap-8">
-        {/* Left Column: Wheels & Status */}
-        <div className="lg:col-span-4 space-y-8">
-          <section className="bg-[#111] border border-white/10 rounded-[32px] p-8 overflow-hidden relative">
-            <div className="absolute top-0 right-0 p-4">
-              <Info className="w-5 h-5 text-white/10" />
-            </div>
-            <h3 className="text-[10px] uppercase tracking-[0.2em] font-black text-white/30 mb-6">The Roulette</h3>
-            
-            <div className="space-y-6">
-              <div className="relative">
-                <div className="flex flex-col gap-2">
-                  <span className="text-xs font-bold text-white/20 uppercase tracking-widest">Stat Wheel</span>
-                  <div className={cn(
-                    "h-20 rounded-2xl border flex items-center justify-center text-xl font-black italic uppercase tracking-tight transition-all duration-500",
-                    isSpinning ? "bg-white/5 border-white/10 blur-sm" : "bg-red-500/10 border-red-500/50 text-red-500"
-                  )}>
-                    {isSpinning ? "Spinning..." : room.currentWheels?.stat}
-                  </div>
-                </div>
-              </div>
-
-              <div className="relative">
-                <div className="flex flex-col gap-2">
-                  <span className="text-xs font-bold text-white/20 uppercase tracking-widest">Twist Wheel</span>
-                  <div className={cn(
-                    "h-20 rounded-2xl border flex items-center justify-center text-xl font-black italic uppercase tracking-tight transition-all duration-500",
-                    isSpinning ? "bg-white/5 border-white/10 blur-sm" : "bg-blue-500/10 border-blue-500/50 text-blue-500"
-                  )}>
-                    {isSpinning ? "Spinning..." : room.currentWheels?.twist}
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="mt-8 p-6 bg-white/5 rounded-2xl border border-white/5">
-              <div className="flex items-center gap-3 mb-2">
-                <Coins className="w-5 h-5 text-yellow-500" />
-                <span className="text-sm font-bold uppercase tracking-widest">Your Balance</span>
-              </div>
-              <span className="text-4xl font-black italic text-yellow-500">${me?.money}</span>
-            </div>
-          </section>
-
-          <section className="bg-[#111] border border-white/10 rounded-[32px] p-8">
-            <h3 className="text-[10px] uppercase tracking-[0.2em] font-black text-white/30 mb-6">Player Status</h3>
-            <div className="space-y-4">
-              {room.players.map(p => (
-                <div key={p.id} className="flex items-center justify-between">
-                  <span className="font-bold">{p.name}</span>
-                  <div className={cn(
-                    "px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest",
-                    p.hasSelected ? "bg-emerald-500/20 text-emerald-500" : "bg-white/5 text-white/20"
-                  )}>
-                    {p.hasSelected ? "Ready" : "Thinking"}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </section>
-        </div>
-
-        {/* Right Column: Game Area */}
-        <div className="lg:col-span-8 space-y-8">
-          {/* Shop Section */}
-          <section className="bg-[#111] border border-white/10 rounded-[40px] p-10">
-            <div className="flex items-center justify-between mb-8">
-              <h2 className="text-3xl font-black italic uppercase tracking-tighter flex items-center gap-3">
-                <ShoppingBag className="w-8 h-8" />
-                Preparation Phase
-              </h2>
-              <div className="flex items-center gap-2 px-4 py-2 bg-white/5 rounded-full border border-white/10">
-                <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                <span className="text-[10px] font-black uppercase tracking-widest text-white/50">Shop Open</span>
+          {/* Right Column: Shop & Leaderboard */}
+          <div className="lg:col-span-4 space-y-8">
+            {/* Shop */}
+            <div className="bg-[#1a1a1a] border border-white/10 rounded-[2.5rem] p-8">
+              <h3 className="text-xl font-black italic uppercase tracking-tighter mb-6 flex items-center gap-2">
+                <ShoppingBag className="w-5 h-5" />
+                Pack Shop
+              </h3>
+              <div className="space-y-4">
+                <PackButton 
+                  title="Type Pack" 
+                  price={10} 
+                  icon={<Zap className="w-4 h-4" />}
+                  color="emerald"
+                  onClick={() => {
+                    const type = POKEMON_TYPES[Math.floor(Math.random() * POKEMON_TYPES.length)];
+                    buyPack(type, 10);
+                  }}
+                  disabled={me?.money < 10 || loadingPack}
+                />
+                <PackButton 
+                  title="Baby Pack" 
+                  price={25} 
+                  icon={<Heart className="w-4 h-4" />}
+                  color="pink"
+                  onClick={() => buyPack('baby', 25)}
+                  disabled={me?.money < 25 || loadingPack}
+                />
+                <PackButton 
+                  title="Legendary" 
+                  price={50} 
+                  icon={<Star className="w-4 h-4" />}
+                  color="amber"
+                  onClick={() => buyPack('legendary', 50)}
+                  disabled={me?.money < 50 || loadingPack}
+                />
               </div>
             </div>
 
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-              <button 
-                onClick={() => buyPack('legendary', 20)}
-                disabled={loadingPack || (me?.money || 0) < 20}
-                className="group relative h-40 bg-gradient-to-br from-yellow-500/20 to-orange-500/20 border border-yellow-500/30 rounded-3xl p-6 flex flex-col justify-between hover:border-yellow-500 transition-all disabled:opacity-50 disabled:grayscale"
-              >
-                <Star className="w-8 h-8 text-yellow-500" />
-                <div>
-                  <h4 className="font-black italic uppercase text-lg leading-tight">Legendary Pack</h4>
-                  <span className="text-yellow-500 font-bold">$20</span>
-                </div>
-              </button>
-
-              <button 
-                onClick={() => buyPack('baby', 20)}
-                disabled={loadingPack || (me?.money || 0) < 20}
-                className="group relative h-40 bg-gradient-to-br from-pink-500/20 to-purple-500/20 border border-pink-500/30 rounded-3xl p-6 flex flex-col justify-between hover:border-pink-500 transition-all disabled:opacity-50 disabled:grayscale"
-              >
-                <Heart className="w-8 h-8 text-pink-500" />
-                <div>
-                  <h4 className="font-black italic uppercase text-lg leading-tight">Baby Pack</h4>
-                  <span className="text-pink-500 font-bold">$20</span>
-                </div>
-              </button>
-
-              {POKEMON_TYPES.slice(0, 2).map(type => (
-                <button 
-                  key={type}
-                  onClick={() => buyPack(type, 10)}
-                  disabled={loadingPack || (me?.money || 0) < 10}
-                  className="group relative h-40 bg-white/5 border border-white/10 rounded-3xl p-6 flex flex-col justify-between hover:border-white/30 transition-all disabled:opacity-50 disabled:grayscale"
-                >
-                  <Zap className="w-8 h-8 text-white/20" />
-                  <div>
-                    <h4 className="font-black italic uppercase text-lg leading-tight">{type} Pack</h4>
-                    <span className="text-white/40 font-bold">$10</span>
-                  </div>
-                </button>
-              ))}
-            </div>
-
-            <div className="flex items-center gap-2 overflow-x-auto pb-4 scrollbar-hide">
-              {POKEMON_TYPES.slice(2).map(type => (
-                <button 
-                  key={type}
-                  onClick={() => buyPack(type, 10)}
-                  disabled={loadingPack || (me?.money || 0) < 10}
-                  className="flex-shrink-0 px-6 py-3 bg-white/5 border border-white/10 rounded-2xl hover:bg-white/10 transition-all disabled:opacity-50 text-xs font-black uppercase tracking-widest"
-                >
-                  {type} ($10)
-                </button>
-              ))}
-            </div>
-          </section>
-
-          {/* Collection Section */}
-          <section className="bg-[#111] border border-white/10 rounded-[40px] p-10">
-            <div className="flex items-center justify-between mb-8">
-              <h2 className="text-3xl font-black italic uppercase tracking-tighter">Your Collection</h2>
-              <button 
-                onClick={() => selectPokemon(null, true)}
-                disabled={me?.hasSelected}
-                className="text-xs font-black uppercase tracking-widest text-white/20 hover:text-red-500 transition-colors disabled:opacity-0"
-              >
-                Skip Round
-              </button>
-            </div>
-
-            {me?.collection.length === 0 ? (
-              <div className="h-64 border-2 border-dashed border-white/5 rounded-[32px] flex flex-col items-center justify-center text-white/10">
-                <RotateCcw className="w-12 h-12 mb-4 opacity-20" />
-                <p className="font-black uppercase tracking-widest">No Pokemon Yet</p>
-                <p className="text-xs mt-2">Buy a pack to start battling</p>
-              </div>
-            ) : (
-              <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-6">
-                {me?.collection.map((p, idx) => (
-                  <motion.div 
-                    key={`${p.id}-${idx}`}
-                    initial={{ opacity: 0, scale: 0.9 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    whileHover={{ y: -5 }}
-                    className={cn(
-                      "group relative bg-[#1a1a1a] border rounded-[32px] p-4 transition-all cursor-pointer",
-                      me.hasSelected ? "opacity-50 pointer-events-none" : "border-white/10 hover:border-red-500/50"
-                    )}
-                    onClick={() => selectPokemon(p)}
-                  >
-                    <div className="aspect-square bg-white/5 rounded-2xl mb-4 p-4 flex items-center justify-center relative overflow-hidden">
-                      <img src={p.image} alt={p.name} className="w-full h-full object-contain relative z-10" />
-                      <div className="absolute inset-0 bg-gradient-to-t from-black/20 to-transparent" />
-                    </div>
-                    <h4 className="font-black italic uppercase text-center mb-4 truncate">{p.name}</h4>
-                    
-                    <div className="grid grid-cols-2 gap-2">
-                      <div className="bg-white/5 rounded-xl p-2 flex flex-col items-center">
-                        <span className="text-[8px] uppercase font-bold text-white/20">ATK</span>
-                        <span className="text-xs font-black">{p.stats.find(s => s.stat.name === 'attack')?.base_stat}</span>
+            {/* Leaderboard */}
+            <div className="bg-[#1a1a1a] border border-white/10 rounded-[2.5rem] p-8">
+              <h3 className="text-xl font-black italic uppercase tracking-tighter mb-6 flex items-center gap-2">
+                <Users className="w-5 h-5" />
+                Trainers
+              </h3>
+              <div className="space-y-4">
+                {room.players.sort((a, b) => b.points - a.points).map((player, i) => (
+                  <div key={player.id} className="flex items-center justify-between p-3 bg-white/5 rounded-2xl border border-white/5">
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-lg bg-white/5 flex items-center justify-center font-black italic text-white/20">
+                        {i + 1}
                       </div>
-                      <div className="bg-white/5 rounded-xl p-2 flex flex-col items-center">
-                        <span className="text-[8px] uppercase font-bold text-white/20">DEF</span>
-                        <span className="text-xs font-black">{p.stats.find(s => s.stat.name === 'defense')?.base_stat}</span>
+                      <div>
+                        <p className="font-bold text-sm flex items-center gap-2">
+                          {player.name}
+                          {player.hasSelected && <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />}
+                        </p>
+                        <p className="text-[10px] text-white/30 uppercase font-bold tracking-widest">{player.points} Points</p>
                       </div>
                     </div>
-                  </motion.div>
+                    <div className="text-right">
+                      <p className="text-xs font-black italic text-emerald-500">${player.money}</p>
+                    </div>
+                  </div>
                 ))}
               </div>
-            )}
-          </section>
+            </div>
+          </div>
         </div>
-      </main>
+      </div>
 
-      {/* Round Result Overlay */}
+      {/* Result Overlay */}
       <AnimatePresence>
         {showResult && (
           <motion.div 
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[100] bg-black/90 backdrop-blur-2xl flex items-center justify-center p-8"
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/90 backdrop-blur-xl"
           >
             <motion.div 
-              initial={{ scale: 0.8, y: 20 }}
+              initial={{ scale: 0.9, y: 20 }}
               animate={{ scale: 1, y: 0 }}
-              className="max-w-xl w-full text-center"
+              className="w-full max-w-2xl bg-[#1a1a1a] border border-white/10 rounded-[3rem] p-12 text-center shadow-2xl"
             >
-              <div className="w-24 h-24 bg-yellow-500 rounded-full flex items-center justify-center mx-auto mb-8 shadow-[0_0_50px_rgba(234,179,8,0.3)]">
+              <div className="w-24 h-24 bg-emerald-500 rounded-full flex items-center justify-center mx-auto mb-8 shadow-2xl shadow-emerald-500/20">
                 <Trophy className="w-12 h-12 text-black" />
               </div>
-              <h2 className="text-7xl font-black italic uppercase tracking-tighter mb-4">Round Result</h2>
-              <p className="text-white/40 uppercase tracking-[0.3em] font-bold mb-12">Winners of this round</p>
+              <h2 className="text-6xl font-black italic uppercase tracking-tighter mb-4">Round Results</h2>
               
-              <div className="space-y-4">
-                {winners.length > 0 ? winners.map(wid => {
-                  const winner = room.players.find(p => p.id === wid);
-                  return (
-                    <div key={wid} className="bg-white/5 border border-white/10 p-6 rounded-3xl flex items-center justify-between">
-                      <span className="text-2xl font-black italic">{winner?.name}</span>
-                      <span className="text-emerald-500 font-black">+1 POINT</span>
-                    </div>
-                  );
-                }) : (
-                  <div className="text-white/20 font-black italic text-2xl">No winners this round</div>
+              <div className="space-y-4 mb-12">
+                {winners.length > 0 ? (
+                  winners.map(wId => {
+                    const winner = room.players.find(p => p.id === wId);
+                    return (
+                      <div key={wId} className="text-3xl font-black italic text-emerald-500 uppercase tracking-tighter">
+                        {winner?.name} Wins!
+                      </div>
+                    );
+                  })
+                ) : (
+                  <div className="text-3xl font-black italic text-red-500 uppercase tracking-tighter">No Winners This Round</div>
                 )}
               </div>
 
-              <div className="mt-12 flex items-center justify-center gap-4">
-                <div className="w-12 h-1 bg-white/10 rounded-full overflow-hidden">
+              <div className="bg-white/5 rounded-3xl p-6 border border-white/10">
+                <p className="text-white/40 text-xs font-bold uppercase tracking-widest mb-2">Next round starting soon...</p>
+                <div className="w-full h-1 bg-white/10 rounded-full overflow-hidden">
                   <motion.div 
-                    initial={{ width: 0 }}
-                    animate={{ width: '100%' }}
+                    initial={{ width: "0%" }}
+                    animate={{ width: "100%" }}
                     transition={{ duration: 5 }}
-                    className="h-full bg-red-500"
+                    className="h-full bg-emerald-500"
                   />
                 </div>
-                <span className="text-[10px] font-black uppercase tracking-widest text-white/20">Next Round Starting...</span>
               </div>
             </motion.div>
           </motion.div>
         )}
       </AnimatePresence>
-
-      {/* Loading Overlay for Packs */}
-      <AnimatePresence>
-        {loadingPack && (
-          <motion.div 
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center"
-          >
-            <div className="flex flex-col items-center">
-              <div className="w-16 h-16 border-4 border-red-500 border-t-transparent rounded-full animate-spin mb-4" />
-              <p className="font-black uppercase tracking-widest italic">Opening Pack...</p>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
     </div>
+  );
+}
+
+function PackButton({ title, price, icon, color, onClick, disabled }: any) {
+  const colors: any = {
+    emerald: "from-emerald-500 to-emerald-700 shadow-emerald-500/20",
+    pink: "from-pink-500 to-pink-700 shadow-pink-500/20",
+    amber: "from-amber-500 to-amber-700 shadow-amber-500/20"
+  };
+
+  return (
+    <button 
+      onClick={onClick}
+      disabled={disabled}
+      className={cn(
+        "w-full p-4 rounded-2xl flex items-center justify-between transition-all active:scale-95 disabled:opacity-50 disabled:grayscale",
+        "bg-gradient-to-r shadow-lg",
+        colors[color]
+      )}
+    >
+      <div className="flex items-center gap-3">
+        <div className="w-8 h-8 bg-black/20 rounded-lg flex items-center justify-center">
+          {icon}
+        </div>
+        <span className="font-black italic uppercase tracking-tighter text-lg">{title}</span>
+      </div>
+      <span className="font-black italic text-xl">${price}</span>
+    </button>
   );
 }

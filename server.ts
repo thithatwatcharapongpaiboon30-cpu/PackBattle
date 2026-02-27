@@ -1,6 +1,5 @@
 import express from "express";
 import { createServer } from "http";
-import { WebSocketServer, WebSocket } from "ws";
 import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -10,233 +9,190 @@ const __dirname = path.dirname(__filename);
 
 async function startServer() {
   const app = express();
+  app.use(express.json());
   const server = createServer(app);
-  const wss = new WebSocketServer({ server });
 
   const PORT = 3000;
 
   // Game State Management
   const rooms = new Map<string, any>();
 
-  wss.on("connection", (ws: WebSocket) => {
-    let connectionPlayerId: string | null = null;
-    let connectionRoomId: string | null = null;
-    let isAlive = true;
+  // API Routes
+  app.post("/api/rooms/create", (req, res) => {
+    const { playerName, playerId: existingId } = req.body;
+    const cleanPlayerName = playerName?.trim();
 
-    ws.on("pong", () => { isAlive = true; });
+    if (!cleanPlayerName) {
+      return res.status(400).json({ error: "Trainer Name is required" });
+    }
 
-    const pingInterval = setInterval(() => {
-      if (!isAlive) {
-        console.log(`[WS] Terminating inactive connection for player ${connectionPlayerId}`);
-        return ws.terminate();
-      }
-      isAlive = false;
-      ws.ping();
-    }, 30000);
+    // Generate a unique 6-character ID
+    let roomId;
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    do {
+      roomId = '';
+      for (let i = 0; i < 6; i++) roomId += chars.charAt(Math.floor(Math.random() * chars.length));
+    } while (rooms.has(roomId));
 
-    ws.on("message", (rawData: any) => {
-      try {
-        const message = JSON.parse(rawData.toString());
-        const { type, payload } = message;
+    const room = {
+      id: roomId,
+      players: [],
+      status: "LOBBY",
+      round: 0,
+      maxRounds: 0,
+      currentWheels: null,
+      history: [],
+      lastUpdate: Date.now()
+    };
+    rooms.set(roomId, room);
 
-        switch (type) {
-          case "JOIN_ROOM": {
-            const { roomId, playerName, playerId: existingId } = payload;
-            const cleanRoomId = roomId?.trim().toUpperCase();
-            const cleanPlayerName = playerName?.trim();
+    const playerId = existingId || Math.random().toString(36).substr(2, 9);
+    const player = {
+      id: playerId,
+      name: cleanPlayerName,
+      points: 0,
+      money: 0,
+      collection: [],
+      selectedPokemon: null,
+      hasSkipped: false,
+      isHost: true,
+      lastSeen: Date.now()
+    };
+    room.players.push(player);
 
-            if (!cleanRoomId || !cleanPlayerName) {
-              ws.send(JSON.stringify({ type: "ERROR", payload: "Name and Room ID are required" }));
-              return;
-            }
-
-            if (!rooms.has(cleanRoomId)) {
-              rooms.set(cleanRoomId, {
-                id: cleanRoomId,
-                players: [],
-                status: "LOBBY",
-                round: 0,
-                maxRounds: 0,
-                currentWheels: null,
-                history: [],
-              });
-            }
-
-            const room = rooms.get(cleanRoomId);
-            
-            // Rejoin logic: check if player already exists by ID
-            let player = room.players.find((p: any) => existingId && p.id === existingId);
-
-            if (player) {
-              // Update existing player's socket
-              player.ws = ws;
-              player.name = cleanPlayerName; // Allow name update on rejoin
-              connectionPlayerId = player.id;
-              console.log(`[Room] ${cleanPlayerName} (${player.id}) rejoined ${cleanRoomId}`);
-            } else {
-              // Check if name is taken by an ACTIVE player
-              const nameTaken = room.players.some((p: any) => p.name === cleanPlayerName && p.ws.readyState === WebSocket.OPEN);
-              if (nameTaken) {
-                ws.send(JSON.stringify({ type: "ERROR", payload: "Name already taken in this room" }));
-                return;
-              }
-
-              if (room.players.length >= 6) {
-                ws.send(JSON.stringify({ type: "ERROR", payload: "Room is full" }));
-                return;
-              }
-              if (room.status !== "LOBBY") {
-                ws.send(JSON.stringify({ type: "ERROR", payload: "Game already started" }));
-                return;
-              }
-
-              const newId = Math.random().toString(36).substr(2, 9);
-              player = {
-                id: newId,
-                name: cleanPlayerName,
-                ws,
-                points: 0,
-                money: 0,
-                collection: [],
-                selectedPokemon: null,
-                hasSkipped: false,
-                isHost: room.players.length === 0,
-              };
-              room.players.push(player);
-              connectionPlayerId = newId;
-              console.log(`[Room] ${cleanPlayerName} (${newId}) joined ${cleanRoomId}`);
-            }
-
-            connectionRoomId = cleanRoomId;
-            
-            ws.send(JSON.stringify({
-              type: "JOINED",
-              payload: { playerId: player.id, room: getSanitizedRoom(room) }
-            }));
-
-            broadcast(cleanRoomId, {
-              type: "ROOM_UPDATED",
-              payload: getSanitizedRoom(room),
-            });
-            break;
-          }
-
-          case "LEAVE_ROOM": {
-            if (connectionRoomId && connectionPlayerId) {
-              const room = rooms.get(connectionRoomId);
-              if (room) {
-                room.players = room.players.filter((p: any) => p.id !== connectionPlayerId);
-                if (room.players.length === 0) {
-                  rooms.delete(connectionRoomId);
-                } else {
-                  if (!room.players.some((p: any) => p.isHost)) {
-                    room.players[0].isHost = true;
-                  }
-                  broadcast(connectionRoomId, { type: "ROOM_UPDATED", payload: getSanitizedRoom(room) });
-                }
-              }
-              connectionRoomId = null;
-              connectionPlayerId = null;
-            }
-            break;
-          }
-
-          case "START_GAME": {
-            const room = rooms.get(connectionRoomId || "");
-            const player = room?.players.find((p: any) => p.id === connectionPlayerId);
-            if (player?.isHost && room.status === "LOBBY" && room.players.length >= 2) {
-              room.status = "PLAYING";
-              room.maxRounds = room.players.length * 3;
-              room.round = 1;
-              startRound(room);
-              broadcast(connectionRoomId!, { type: "ROOM_UPDATED", payload: getSanitizedRoom(room) });
-            }
-            break;
-          }
-
-          case "DELETE_ROOM": {
-            const room = rooms.get(connectionRoomId || "");
-            const player = room?.players.find((p: any) => p.id === connectionPlayerId);
-            if (player?.isHost) {
-              broadcast(connectionRoomId!, { type: "ROOM_DELETED" });
-              rooms.delete(connectionRoomId!);
-            }
-            break;
-          }
-
-          case "BUY_PACK": {
-            const room = rooms.get(connectionRoomId || "");
-            const player = room?.players.find((p: any) => p.id === connectionPlayerId);
-            if (player && player.money >= payload.cost) {
-              player.money -= payload.cost;
-              player.collection.push(...payload.pokemon);
-              broadcast(connectionRoomId!, { type: "ROOM_UPDATED", payload: getSanitizedRoom(room) });
-            }
-            break;
-          }
-
-          case "SELECT_POKEMON": {
-            const room = rooms.get(connectionRoomId || "");
-            const player = room?.players.find((p: any) => p.id === connectionPlayerId);
-            if (player) {
-              player.selectedPokemon = payload.pokemon;
-              player.hasSkipped = payload.skipped || false;
-              checkRoundEnd(room);
-              broadcast(connectionRoomId!, { type: "ROOM_UPDATED", payload: getSanitizedRoom(room) });
-            }
-            break;
-          }
-
-          case "SYNC": {
-            const room = rooms.get(connectionRoomId || "");
-            if (room) {
-              ws.send(JSON.stringify({ type: "ROOM_UPDATED", payload: getSanitizedRoom(room) }));
-            }
-            break;
-          }
-        }
-      } catch (err) {
-        console.error("[WS] Error:", err);
-      }
-    });
-
-    ws.on("close", () => {
-      clearInterval(pingInterval);
-      if (connectionRoomId && connectionPlayerId) {
-        console.log(`[WS] Player ${connectionPlayerId} connection closed for room ${connectionRoomId}`);
-        // We don't remove the player immediately to allow for rejoin
-        // But we broadcast an update so others know they might be "offline"
-        const room = rooms.get(connectionRoomId);
-        if (room) {
-          broadcast(connectionRoomId, { type: "ROOM_UPDATED", payload: getSanitizedRoom(room) });
-        }
-      }
-    });
+    res.json({ playerId: player.id, room: getSanitizedRoom(room) });
   });
 
-  function broadcast(roomId: string, message: any) {
+  app.post("/api/rooms/join", (req, res) => {
+    const { roomId, playerName, playerId: existingId } = req.body;
+    const cleanRoomId = roomId?.trim().toUpperCase();
+    const cleanPlayerName = playerName?.trim();
+
+    if (!cleanRoomId || !cleanPlayerName) {
+      return res.status(400).json({ error: "Name and Room ID are required" });
+    }
+
+    const room = rooms.get(cleanRoomId);
+    if (!room) {
+      return res.status(404).json({ error: "Lobby not found. Please check the code." });
+    }
+
+    let player = room.players.find((p: any) => existingId && p.id === existingId);
+
+    if (player) {
+      player.name = cleanPlayerName;
+      player.lastSeen = Date.now();
+    } else {
+      if (room.players.length >= 6) return res.status(400).json({ error: "Room is full" });
+      if (room.status !== "LOBBY") return res.status(400).json({ error: "Game already started" });
+
+      const newId = Math.random().toString(36).substr(2, 9);
+      player = {
+        id: newId,
+        name: cleanPlayerName,
+        points: 0,
+        money: 0,
+        collection: [],
+        selectedPokemon: null,
+        hasSkipped: false,
+        isHost: room.players.length === 0,
+        lastSeen: Date.now()
+      };
+      room.players.push(player);
+    }
+
+    room.lastUpdate = Date.now();
+    res.json({ playerId: player.id, room: getSanitizedRoom(room) });
+  });
+
+  app.get("/api/rooms/:id", (req, res) => {
+    const room = rooms.get(req.params.id.toUpperCase());
+    if (!room) return res.status(404).json({ error: "Room not found" });
+    
+    const pId = req.query.playerId as string;
+    if (pId) {
+      const player = room.players.find((p: any) => p.id === pId);
+      if (player) player.lastSeen = Date.now();
+    }
+
+    res.json(getSanitizedRoom(room));
+  });
+
+  app.post("/api/rooms/:id/action", (req, res) => {
+    const roomId = req.params.id.toUpperCase();
+    const { playerId, type, payload } = req.body;
     const room = rooms.get(roomId);
-    if (!room) return;
-    const data = JSON.stringify(message);
-    room.players.forEach((p: any) => {
-      if (p.ws.readyState === WebSocket.OPEN) {
-        try {
-          p.ws.send(data);
-        } catch (e) {
-          console.error(`[WS] Failed to send to ${p.name}:`, e);
+    if (!room) return res.status(404).json({ error: "Room not found" });
+
+    const player = room.players.find((p: any) => p.id === playerId);
+    if (!player) return res.status(403).json({ error: "Player not in room" });
+
+    switch (type) {
+      case "START_GAME":
+        if (player.isHost && room.status === "LOBBY" && room.players.length >= 2) {
+          room.status = "PLAYING";
+          room.maxRounds = room.players.length * 3;
+          room.round = 1;
+          startRound(room);
         }
-      }
-    });
-  }
+        break;
+      case "BUY_PACK":
+        if (player.money >= payload.cost) {
+          player.money -= payload.cost;
+          player.collection.push(...payload.pokemon);
+        }
+        break;
+      case "SELECT_POKEMON":
+        player.selectedPokemon = payload.pokemon;
+        player.hasSkipped = payload.skipped || false;
+        checkRoundEnd(room);
+        break;
+      case "LEAVE_ROOM":
+        room.players = room.players.filter((p: any) => p.id !== playerId);
+        if (room.players.length === 0) {
+          rooms.delete(roomId);
+        } else if (!room.players.some((p: any) => p.isHost)) {
+          room.players[0].isHost = true;
+        }
+        break;
+    }
+
+    room.lastUpdate = Date.now();
+    res.json(getSanitizedRoom(room));
+  });
+
+  app.delete("/api/rooms/:id", (req, res) => {
+    const roomId = req.params.id.toUpperCase();
+    const playerId = req.query.playerId as string;
+    
+    console.log(`[Server] Delete request for ${roomId} from ${playerId}`);
+    
+    const room = rooms.get(roomId);
+    if (!room) {
+      return res.status(404).json({ error: "Room not found" });
+    }
+
+    const player = room.players.find((p: any) => p.id === playerId);
+    if (player?.isHost) {
+      console.log(`[Server] Room ${roomId} deleted by host ${player.name}`);
+      rooms.delete(roomId);
+      return res.json({ success: true });
+    }
+    
+    res.status(403).json({ error: "Only the host can delete the lobby" });
+  });
 
   function getSanitizedRoom(room: any) {
     if (!room) return null;
+    const now = Date.now();
     return {
       id: room.id,
       status: room.status,
       round: room.round,
       maxRounds: room.maxRounds,
       currentWheels: room.currentWheels,
+      lastUpdate: room.lastUpdate,
+      lastWinners: room.lastWinners,
       players: room.players.map((p: any) => ({
         id: p.id,
         name: p.name,
@@ -246,118 +202,70 @@ async function startServer() {
         hasSelected: !!p.selectedPokemon || p.hasSkipped,
         hasSkipped: p.hasSkipped,
         isHost: p.isHost,
-        isOnline: p.ws.readyState === WebSocket.OPEN,
+        isOnline: (now - p.lastSeen) < 15000,
       })),
     };
   }
 
   function startRound(room: any) {
-    console.log(`[Room] Starting round ${room.round} in ${room.id}`);
-    // Reset player states for new round
     room.players.forEach((p: any) => {
       p.money += 10;
       p.selectedPokemon = null;
       p.hasSkipped = false;
     });
 
-    const statOptions = [
-      "highest base stat", "highest attack", "highest special attack", "highest hp", 
-      "highest defense", "highest special defense", "highest speed",
-      "lowest base stat", "lowest attack", "lowest special attack", "lowest hp", 
-      "lowest defense", "lowest special defense", "lowest speed"
-    ];
-    const twistOptions = [
-      "comes from 3 stage line", "comes from 2 stage line", "comes from one stage line", 
-      "cannot evolve", "can evolve"
-    ];
+    const statOptions = ["highest base stat", "highest attack", "highest special attack", "highest hp", "highest defense", "highest special defense", "highest speed", "lowest base stat", "lowest attack", "lowest special attack", "lowest hp", "lowest defense", "lowest special defense", "lowest speed"];
+    const twistOptions = ["comes from 3 stage line", "comes from 2 stage line", "comes from one stage line", "cannot evolve", "can evolve"];
 
     room.currentWheels = {
       stat: statOptions[Math.floor(Math.random() * statOptions.length)],
       twist: twistOptions[Math.floor(Math.random() * twistOptions.length)],
     };
-
-    broadcast(room.id, {
-      type: "ROUND_STARTED",
-      payload: {
-        round: room.round,
-        wheels: room.currentWheels,
-        room: getSanitizedRoom(room),
-      },
-    });
+    room.lastUpdate = Date.now();
   }
 
   function checkRoundEnd(room: any) {
     const allReady = room.players.every((p: any) => p.selectedPokemon || p.hasSkipped);
-    if (allReady) {
-      console.log(`[Room] All players ready in ${room.id}. Resolving round...`);
-      resolveRound(room);
-    }
+    if (allReady) resolveRound(room);
   }
 
   function resolveRound(room: any) {
     const playersWhoPlayed = room.players.filter((p: any) => p.selectedPokemon && !p.hasSkipped);
-    
     let winners: any[] = [];
 
     if (playersWhoPlayed.length === 0) {
-      // Rule 4: All get 1 point
-      console.log("[Room] No players played. All get 1 point.");
       room.players.forEach((p: any) => p.points += 1);
       winners = room.players;
     } else if (playersWhoPlayed.length === 1) {
-      // Rule 3: Single player wins
-      console.log(`[Room] Only ${playersWhoPlayed[0].name} played. Automatic win.`);
       playersWhoPlayed[0].points += 1;
       winners = [playersWhoPlayed[0]];
     } else {
-      // Rule 1 & 2: Compare stats and twist compliance
       const compliantPlayers = playersWhoPlayed.filter((p: any) => isCompliant(p.selectedPokemon, room.currentWheels.twist));
-      
-      if (compliantPlayers.length === 0) {
-        console.log("[Room] No compliant players. No winners.");
-      } else if (compliantPlayers.length === 1) {
-        console.log(`[Room] Only ${compliantPlayers[0].name} was compliant. Win.`);
+      if (compliantPlayers.length === 1) {
         compliantPlayers[0].points += 1;
         winners = [compliantPlayers[0]];
-      } else {
+      } else if (compliantPlayers.length > 1) {
         const statKey = getStatKey(room.currentWheels.stat);
         const isHighest = room.currentWheels.stat.startsWith("highest");
-        
         let bestValue = isHighest ? -Infinity : Infinity;
         let roundWinners: any[] = [];
 
         compliantPlayers.forEach((p: any) => {
           const val = getPokemonStat(p.selectedPokemon, statKey);
-          if (isHighest) {
-            if (val > bestValue) {
-              bestValue = val;
-              roundWinners = [p];
-            } else if (val === bestValue) {
-              roundWinners.push(p);
-            }
-          } else {
-            if (val < bestValue) {
-              bestValue = val;
-              roundWinners = [p];
-            } else if (val === bestValue) {
-              roundWinners.push(p);
-            }
+          if (isHighest ? val > bestValue : val < bestValue) {
+            bestValue = val;
+            roundWinners = [p];
+          } else if (val === bestValue) {
+            roundWinners.push(p);
           }
         });
-
-        console.log(`[Room] Round winners: ${roundWinners.map(p => p.name).join(", ")}`);
         roundWinners.forEach(p => p.points += 1);
         winners = roundWinners;
       }
     }
 
-    broadcast(room.id, {
-      type: "ROUND_RESOLVED",
-      payload: {
-        winners: winners.map(p => p.id),
-        room: getSanitizedRoom(room),
-      },
-    });
+    room.lastWinners = winners.map(p => p.id);
+    room.lastUpdate = Date.now();
 
     setTimeout(() => {
       if (room.round < room.maxRounds) {
@@ -365,18 +273,13 @@ async function startServer() {
         startRound(room);
       } else {
         room.status = "FINISHED";
-        console.log(`[Room] Game finished in ${room.id}`);
-        broadcast(room.id, {
-          type: "GAME_FINISHED",
-          payload: getSanitizedRoom(room),
-        });
       }
+      room.lastUpdate = Date.now();
     }, 5000);
   }
 
   function isCompliant(pokemon: any, twist: string) {
     if (!pokemon) return false;
-    // These values should be attached to the pokemon object when fetched
     switch (twist) {
       case "comes from 3 stage line": return pokemon.evolutionLineLength === 3;
       case "comes from 2 stage line": return pokemon.evolutionLineLength === 2;
@@ -388,7 +291,6 @@ async function startServer() {
   }
 
   function getStatKey(statDesc: string) {
-    if (!statDesc) return "total";
     const lower = statDesc.toLowerCase();
     if (lower.includes("base stat")) return "total";
     if (lower.includes("special attack")) return "special-attack";
@@ -402,9 +304,7 @@ async function startServer() {
 
   function getPokemonStat(pokemon: any, key: string) {
     if (!pokemon || !pokemon.stats) return 0;
-    if (key === "total") {
-      return pokemon.stats.reduce((acc: number, s: any) => acc + s.base_stat, 0);
-    }
+    if (key === "total") return pokemon.stats.reduce((acc: number, s: any) => acc + s.base_stat, 0);
     const stat = pokemon.stats.find((s: any) => s.stat.name === key);
     return stat ? stat.base_stat : 0;
   }
@@ -422,10 +322,6 @@ async function startServer() {
       res.sendFile(path.join(__dirname, "dist", "index.html"));
     });
   }
-
-  server.on("error", (err) => {
-    console.error("[HTTP] Server error:", err);
-  });
 
   server.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
