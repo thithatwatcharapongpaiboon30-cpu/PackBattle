@@ -137,6 +137,7 @@ app.post("/api/rooms/:id/action", (req, res) => {
       }
       break;
     case "SELECT_POKEMON":
+      if (room.status !== "PLAYING") break;
       player.selectedPokemon = payload.pokemon;
       player.hasSkipped = payload.skipped || false;
       checkRoundEnd(room);
@@ -145,8 +146,11 @@ app.post("/api/rooms/:id/action", (req, res) => {
       room.players = room.players.filter((p: any) => p.id !== playerId);
       if (room.players.length === 0) {
         rooms.delete(roomId);
-      } else if (!room.players.some((p: any) => p.isHost)) {
-        room.players[0].isHost = true;
+      } else {
+        if (!room.players.some((p: any) => p.isHost)) {
+          room.players[0].isHost = true;
+        }
+        if (room.status === "PLAYING") checkRoundEnd(room);
       }
       break;
   }
@@ -220,8 +224,12 @@ function startRound(room: any) {
 }
 
 function checkRoundEnd(room: any) {
+  if (room.status !== "PLAYING") return;
   const allReady = room.players.every((p: any) => p.selectedPokemon || p.hasSkipped);
-  if (allReady) resolveRound(room);
+  if (allReady) {
+    room.status = "RESOLVING";
+    resolveRound(room);
+  }
 }
 
 function resolveRound(room: any) {
@@ -279,6 +287,7 @@ function resolveRound(room: any) {
   setTimeout(() => {
     if (room.round < room.maxRounds) {
       room.round += 1;
+      room.status = "PLAYING";
       startRound(room);
     } else {
       room.status = "FINISHED";

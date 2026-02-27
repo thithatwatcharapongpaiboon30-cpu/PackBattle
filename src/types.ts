@@ -13,7 +13,7 @@ export interface Pokemon {
 export interface GameState {
   id: string;
   players: Player[];
-  status: 'LOBBY' | 'PLAYING' | 'FINISHED';
+  status: 'LOBBY' | 'PLAYING' | 'RESOLVING' | 'FINISHED';
   round: number;
   maxRounds: number;
   currentWheels: {
