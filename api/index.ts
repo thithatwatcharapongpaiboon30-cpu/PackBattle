@@ -100,6 +100,10 @@ app.post("/api/rooms/join", (req, res) => {
 });
 
 app.get("/api/rooms/:id", (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+
   const room = rooms.get(req.params.id.toUpperCase());
   if (!room) return res.status(404).json({ error: "Room not found" });
   
@@ -119,7 +123,7 @@ app.post("/api/rooms/:id/restore", (req, res) => {
   const { room } = req.body;
   
   if (!rooms.has(roomId)) {
-    console.log(`[Server] Restoring room ${roomId} from host backup`);
+    console.log(`[Server] Restoring room ${roomId} from backup`);
     const restoredRoom = {
       ...room,
       lastUpdate: Date.now(),
@@ -169,7 +173,8 @@ app.post("/api/rooms/:id/action", (req, res) => {
     case "LEAVE_ROOM":
       room.players = room.players.filter((p: any) => p.id !== playerId);
       if (room.players.length === 0) {
-        rooms.delete(roomId);
+        room.status = "DELETED";
+        setTimeout(() => rooms.delete(roomId), 10000);
       } else {
         if (!room.players.some((p: any) => p.isHost)) {
           room.players[0].isHost = true;
@@ -210,7 +215,9 @@ app.delete("/api/rooms/:id", (req, res) => {
   const player = room.players.find((p: any) => p.id === playerId);
   if (player?.isHost) {
     console.log(`[Server] Room ${roomId} deleted by host ${player.name}`);
-    rooms.delete(roomId);
+    room.status = "DELETED";
+    // We don't actually delete it from the Map immediately so clients can see the DELETED status
+    setTimeout(() => rooms.delete(roomId), 10000);
     return res.json({ success: true });
   }
   

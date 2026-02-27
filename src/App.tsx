@@ -33,10 +33,10 @@ const POKEMON_TYPES = [
 
 export default function App() {
   const [room, setRoom] = useState<GameState | null>(null);
-  const [playerName, setPlayerName] = useState(() => localStorage.getItem('poke_name') || '');
+  const [playerName, setPlayerName] = useState(() => sessionStorage.getItem('poke_name') || '');
   const [roomId, setRoomId] = useState('');
   const [isJoined, setIsJoined] = useState(false);
-  const [myId, setMyId] = useState(() => localStorage.getItem('poke_id'));
+  const [myId, setMyId] = useState(() => sessionStorage.getItem('poke_id'));
   const [isSpinning, setIsSpinning] = useState(false);
   const [showResult, setShowResult] = useState(false);
   const [winners, setWinners] = useState<string[]>([]);
@@ -45,12 +45,20 @@ export default function App() {
 
   const me = room?.players.find(p => p.id === myId);
 
+  const roomRef = useRef(room);
+  const meRef = useRef(me);
+
   useEffect(() => {
-    if (playerName) localStorage.setItem('poke_name', playerName);
+    roomRef.current = room;
+    meRef.current = me;
+  }, [room, me]);
+
+  useEffect(() => {
+    if (playerName) sessionStorage.setItem('poke_name', playerName);
   }, [playerName]);
 
   useEffect(() => {
-    if (myId) localStorage.setItem('poke_id', myId);
+    if (myId) sessionStorage.setItem('poke_id', myId);
   }, [myId]);
 
   // Polling for state updates
@@ -62,22 +70,30 @@ export default function App() {
 
     const poll = async () => {
       try {
-        const res = await fetch(`/api/rooms/${room.id}?playerId=${myId}`);
+        const currentRoom = roomRef.current;
+        const currentMe = meRef.current;
+
+        const res = await fetch(`/api/rooms/${room.id}?playerId=${myId}&t=${Date.now()}`);
         if (res.status === 404) {
-          if (me?.isHost) {
-            // Restore room from host memory
+          if (currentRoom) {
+            // Restore room from memory (any player can do this if server restarts)
             await fetch(`/api/rooms/${room.id}/restore`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ room })
+              body: JSON.stringify({ room: currentRoom })
             });
-          } else {
-            // Wait for host to restore
           }
           return;
         }
         const data = await res.json();
         
+        if (data.status === 'DELETED') {
+          alert("The host has closed the lobby.");
+          setIsJoined(false);
+          setRoom(null);
+          return;
+        }
+
         // Handle transitions
         if (data.status === 'PLAYING' && lastStatus === 'LOBBY') {
           setIsSpinning(true);
