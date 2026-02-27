@@ -153,6 +153,18 @@ app.post("/api/rooms/:id/action", (req, res) => {
         if (room.status === "PLAYING") checkRoundEnd(room);
       }
       break;
+    case "RETURN_TO_LOBBY":
+      if (player.isHost) {
+        room.status = "LOBBY";
+        room.players.forEach((p: any) => {
+          p.points = 0;
+          p.money = 0;
+          p.collection = [];
+          p.selectedPokemon = null;
+          p.hasSkipped = false;
+        });
+      }
+      break;
   }
 
   room.lastUpdate = Date.now();

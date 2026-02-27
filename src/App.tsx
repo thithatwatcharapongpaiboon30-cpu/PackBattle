@@ -690,15 +690,39 @@ export default function App() {
               </div>
 
               <div className="bg-white/5 rounded-3xl p-6 border border-white/10 max-w-md mx-auto">
-                <p className="text-white/40 text-xs font-bold uppercase tracking-widest mb-2">Next round starting soon...</p>
-                <div className="w-full h-1 bg-white/10 rounded-full overflow-hidden">
-                  <motion.div 
-                    initial={{ width: "0%" }}
-                    animate={{ width: "100%" }}
-                    transition={{ duration: 8 }}
-                    className="h-full bg-emerald-500"
-                  />
-                </div>
+                {room.status === 'FINISHED' ? (
+                  <div className="flex flex-col items-center gap-4">
+                    <p className="text-white font-bold uppercase tracking-widest text-xl text-amber-500">Game Over!</p>
+                    {me?.isHost ? (
+                      <button 
+                        onClick={async () => {
+                          await fetch(`/api/rooms/${room.id}/action`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ playerId: myId, type: 'RETURN_TO_LOBBY' })
+                          });
+                        }}
+                        className="bg-emerald-500 text-black px-6 py-3 rounded-xl font-black italic uppercase tracking-tighter hover:bg-emerald-400 transition-colors w-full"
+                      >
+                        Return to Lobby
+                      </button>
+                    ) : (
+                      <p className="text-white/40 text-xs font-bold uppercase tracking-widest">Waiting for host to return to lobby...</p>
+                    )}
+                  </div>
+                ) : (
+                  <>
+                    <p className="text-white/40 text-xs font-bold uppercase tracking-widest mb-2">Next round starting soon...</p>
+                    <div className="w-full h-1 bg-white/10 rounded-full overflow-hidden">
+                      <motion.div 
+                        initial={{ width: "0%" }}
+                        animate={{ width: "100%" }}
+                        transition={{ duration: 8 }}
+                        className="h-full bg-emerald-500"
+                      />
+                    </div>
+                  </>
+                )}
               </div>
             </motion.div>
           </motion.div>
