@@ -109,7 +109,31 @@ app.get("/api/rooms/:id", (req, res) => {
     if (player) player.lastSeen = Date.now();
   }
 
+  checkStateTransitions(room);
+
   res.json(getSanitizedRoom(room));
+});
+
+app.post("/api/rooms/:id/restore", (req, res) => {
+  const roomId = req.params.id.toUpperCase();
+  const { room } = req.body;
+  
+  if (!rooms.has(roomId)) {
+    console.log(`[Server] Restoring room ${roomId} from host backup`);
+    const restoredRoom = {
+      ...room,
+      lastUpdate: Date.now(),
+      players: room.players.map((p: any) => ({
+        ...p,
+        selectedPokemon: null,
+        hasSkipped: false,
+        lastSeen: Date.now()
+      }))
+    };
+    rooms.set(roomId, restoredRoom);
+    checkStateTransitions(restoredRoom);
+  }
+  res.json({ success: true });
 });
 
 app.post("/api/rooms/:id/action", (req, res) => {
@@ -167,6 +191,7 @@ app.post("/api/rooms/:id/action", (req, res) => {
       break;
   }
 
+  checkStateTransitions(room);
   room.lastUpdate = Date.now();
   res.json(getSanitizedRoom(room));
 });
@@ -204,6 +229,7 @@ function getSanitizedRoom(room: any) {
     lastUpdate: room.lastUpdate,
     lastWinners: room.lastWinners,
     lastPlays: room.lastPlays,
+    resolveEndTime: room.resolveEndTime,
     players: room.players.map((p: any) => ({
       id: p.id,
       name: p.name,
@@ -241,6 +267,20 @@ function checkRoundEnd(room: any) {
   if (allReady) {
     room.status = "RESOLVING";
     resolveRound(room);
+  }
+}
+
+function checkStateTransitions(room: any) {
+  if (room.status === "RESOLVING" && room.resolveEndTime && Date.now() >= room.resolveEndTime) {
+    if (room.round < room.maxRounds) {
+      room.round += 1;
+      room.status = "PLAYING";
+      startRound(room);
+    } else {
+      room.status = "FINISHED";
+    }
+    room.resolveEndTime = null;
+    room.lastUpdate = Date.now();
   }
 }
 
@@ -294,18 +334,8 @@ function resolveRound(room: any) {
     }
   });
 
+  room.resolveEndTime = Date.now() + 8000;
   room.lastUpdate = Date.now();
-
-  setTimeout(() => {
-    if (room.round < room.maxRounds) {
-      room.round += 1;
-      room.status = "PLAYING";
-      startRound(room);
-    } else {
-      room.status = "FINISHED";
-    }
-    room.lastUpdate = Date.now();
-  }, 8000);
 }
 
 function isCompliant(pokemon: any, twist: string) {

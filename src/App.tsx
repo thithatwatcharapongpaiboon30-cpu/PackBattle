@@ -64,9 +64,16 @@ export default function App() {
       try {
         const res = await fetch(`/api/rooms/${room.id}?playerId=${myId}`);
         if (res.status === 404) {
-          alert("Room no longer exists");
-          setIsJoined(false);
-          setRoom(null);
+          if (me?.isHost) {
+            // Restore room from host memory
+            await fetch(`/api/rooms/${room.id}/restore`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ room })
+            });
+          } else {
+            // Wait for host to restore
+          }
           return;
         }
         const data = await res.json();
