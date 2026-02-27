@@ -239,7 +239,7 @@ function getSanitizedRoom(room: any) {
       hasSelected: !!p.selectedPokemon || p.hasSkipped,
       hasSkipped: p.hasSkipped,
       isHost: p.isHost,
-      isOnline: (now - p.lastSeen) < 15000,
+      isOnline: (now - p.lastSeen) < 30000,
     })),
   };
 }

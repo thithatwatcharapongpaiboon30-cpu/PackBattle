@@ -89,9 +89,11 @@ export default function App() {
           setTimeout(() => setIsSpinning(false), 3000);
         }
 
-        if (data.lastWinners) {
+        if (data.lastWinners && data.status !== 'LOBBY') {
           setWinners(data.lastWinners);
-          setShowResult(data.players.every((p: any) => p.hasSelected) && data.status !== 'LOBBY');
+          setShowResult(data.status === 'RESOLVING' || data.status === 'FINISHED');
+        } else {
+          setShowResult(false);
         }
 
         setRoom(data);
