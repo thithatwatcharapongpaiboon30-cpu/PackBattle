@@ -107,6 +107,12 @@ app.get("/api/rooms/:id", (req, res) => {
   const room = rooms.get(req.params.id.toUpperCase());
   if (!room) return res.status(404).json({ error: "Room not found" });
   
+  const clientVersion = parseInt(req.query.v as string) || 0;
+  if (clientVersion > (room.version || 0)) {
+    console.log(`[Server] Client ${req.query.playerId} has newer version (${clientVersion} > ${room.version}). Requesting restore.`);
+    return res.status(409).json({ error: "Client has newer state" });
+  }
+  
   const pId = req.query.playerId as string;
   if (pId) {
     const player = room.players.find((p: any) => p.id === pId);
@@ -122,6 +128,10 @@ app.get("/api/rooms/:id", (req, res) => {
   checkRoundEnd(room);
   checkStateTransitions(room);
 
+  // Increment version on every poll if state changed? No, just increment when actions happen.
+  // Actually, let's just increment it here so it's always increasing.
+  room.version = (room.version || 0) + 1;
+
   res.json(getSanitizedRoom(room));
 });
 
@@ -130,19 +140,32 @@ app.post("/api/rooms/:id/restore", (req, res) => {
   const { room } = req.body;
   
   if (!rooms.has(roomId)) {
-    console.log(`[Server] Restoring room ${roomId} from backup`);
+    console.log(`[Server] Restoring room ${roomId} from backup (version ${room.version})`);
     const restoredRoom = {
       ...room,
       lastUpdate: Date.now(),
       players: room.players.map((p: any) => ({
         ...p,
-        selectedPokemon: null,
-        hasSkipped: false,
         lastSeen: Date.now()
       }))
     };
     rooms.set(roomId, restoredRoom);
     checkStateTransitions(restoredRoom);
+  } else {
+    const existingRoom = rooms.get(roomId);
+    if (room.version > (existingRoom.version || 0)) {
+      console.log(`[Server] Overwriting room ${roomId} with newer backup (version ${room.version} > ${existingRoom.version})`);
+      const restoredRoom = {
+        ...room,
+        lastUpdate: Date.now(),
+        players: room.players.map((p: any) => ({
+          ...p,
+          lastSeen: Date.now()
+        }))
+      };
+      rooms.set(roomId, restoredRoom);
+      checkStateTransitions(restoredRoom);
+    }
   }
   res.json({ success: true });
 });
@@ -244,6 +267,7 @@ function getSanitizedRoom(room: any) {
     lastWinners: room.lastWinners,
     lastPlays: room.lastPlays,
     resolveEndTime: room.resolveEndTime,
+    version: room.version,
     players: room.players.map((p: any) => ({
       id: p.id,
       name: p.name,

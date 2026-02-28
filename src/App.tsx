@@ -18,7 +18,7 @@ import {
   Skull
 } from 'lucide-react';
 import { GameState, Pokemon, Player } from './types';
-import { getRandomPokemonByType, getRandomLegendary, getRandomBaby } from './services/pokeService';
+import { getRandomPokemonByType, getRandomLegendary, getRandomBaby, getRandomPokemon } from './services/pokeService';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
@@ -41,6 +41,8 @@ export default function App() {
   const [showResult, setShowResult] = useState(false);
   const [winners, setWinners] = useState<string[]>([]);
   const [loadingPack, setLoadingPack] = useState(false);
+  const [packSelection, setPackSelection] = useState<{pokemon: Pokemon[], cost: number} | null>(null);
+  const [selectedPackCards, setSelectedPackCards] = useState<string[]>([]);
   const [socketReady, setSocketReady] = useState(true);
 
   const me = room?.players.find(p => p.id === myId);
@@ -73,10 +75,10 @@ export default function App() {
         const currentRoom = roomRef.current;
         const currentMe = meRef.current;
 
-        const res = await fetch(`/api/rooms/${room.id}?playerId=${myId}&t=${Date.now()}`);
-        if (res.status === 404) {
+        const res = await fetch(`/api/rooms/${room.id}?playerId=${myId}&t=${Date.now()}&v=${currentRoom?.version || 0}`);
+        if (res.status === 404 || res.status === 409) {
           if (currentRoom) {
-            // Restore room from memory (any player can do this if server restarts)
+            // Restore room from memory (any player can do this to converge on highest version)
             await fetch(`/api/rooms/${room.id}/restore`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -236,25 +238,56 @@ export default function App() {
       let pokemon: Pokemon[] = [];
       if (type === 'legendary') {
         pokemon = await getRandomLegendary(3);
+        await fetch(`/api/rooms/${room?.id}/action`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            playerId: myId, 
+            type: 'BUY_PACK', 
+            payload: { cost, pokemon } 
+          })
+        });
       } else if (type === 'baby') {
         pokemon = await getRandomBaby(3);
+        await fetch(`/api/rooms/${room?.id}/action`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            playerId: myId, 
+            type: 'BUY_PACK', 
+            payload: { cost, pokemon } 
+          })
+        });
       } else {
-        pokemon = await getRandomPokemonByType(type, 3);
+        pokemon = await getRandomPokemon(6);
+        setPackSelection({ pokemon, cost });
+        setSelectedPackCards([]);
       }
-      
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoadingPack(false);
+    }
+  };
+
+  const confirmPackSelection = async () => {
+    if (!packSelection || selectedPackCards.length !== 3) return;
+    const selectedPokemon = packSelection.pokemon.filter(p => selectedPackCards.includes(p.id.toString()));
+    
+    try {
       await fetch(`/api/rooms/${room?.id}/action`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           playerId: myId, 
           type: 'BUY_PACK', 
-          payload: { cost, pokemon } 
+          payload: { cost: packSelection.cost, pokemon: selectedPokemon } 
         })
       });
+      setPackSelection(null);
+      setSelectedPackCards([]);
     } catch (e) {
       console.error(e);
-    } finally {
-      setLoadingPack(false);
     }
   };
 
@@ -611,19 +644,16 @@ export default function App() {
                 />
                 
                 <div className="h-px w-full bg-white/10 my-4" />
-                <h4 className="text-xs font-bold uppercase tracking-widest text-white/40 mb-2">Type Packs ($10)</h4>
+                <h4 className="text-xs font-bold uppercase tracking-widest text-white/40 mb-2">Standard Packs ($10)</h4>
                 
-                {POKEMON_TYPES.map(type => (
-                  <PackButton 
-                    key={type}
-                    title={`${type} Pack`} 
-                    price={10} 
-                    icon={<Zap className="w-4 h-4" />}
-                    color="emerald"
-                    onClick={() => buyPack(type, 10)}
-                    disabled={me?.money < 10 || loadingPack}
-                  />
-                ))}
+                <PackButton 
+                  title="Standard Pack" 
+                  price={10} 
+                  icon={<Zap className="w-4 h-4" />}
+                  color="emerald"
+                  onClick={() => buyPack('standard', 10)}
+                  disabled={me?.money < 10 || loadingPack}
+                />
               </div>
             </div>
 
@@ -659,6 +689,85 @@ export default function App() {
         </div>
       </div>
 
+      {/* Pack Selection Modal */}
+      <AnimatePresence>
+        {packSelection && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/90 backdrop-blur-xl overflow-y-auto"
+          >
+            <motion.div 
+              initial={{ scale: 0.9, y: 20 }}
+              animate={{ scale: 1, y: 0 }}
+              className="w-full max-w-5xl bg-[#1a1a1a] border border-white/10 rounded-[3rem] p-8 md:p-12 shadow-2xl my-8"
+            >
+              <div className="text-center mb-8">
+                <h2 className="text-4xl font-black italic uppercase tracking-tighter mb-2">Choose 3 Pokémon</h2>
+                <p className="text-white/50">Select exactly 3 Pokémon to add to your collection.</p>
+              </div>
+
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-8">
+                {packSelection.pokemon.map((p) => {
+                  const isSelected = selectedPackCards.includes(p.id.toString());
+                  return (
+                    <motion.div
+                      key={p.id}
+                      whileHover={{ y: -5 }}
+                      whileTap={{ scale: 0.95 }}
+                      onClick={() => {
+                        if (isSelected) {
+                          setSelectedPackCards(prev => prev.filter(id => id !== p.id.toString()));
+                        } else if (selectedPackCards.length < 3) {
+                          setSelectedPackCards(prev => [...prev, p.id.toString()]);
+                        }
+                      }}
+                      className={cn(
+                        "relative bg-[#222] rounded-2xl p-4 cursor-pointer transition-all border-2",
+                        isSelected ? "border-emerald-500 shadow-lg shadow-emerald-500/20" : "border-white/5 hover:border-white/20"
+                      )}
+                    >
+                      {isSelected && (
+                        <div className="absolute -top-2 -right-2 w-6 h-6 bg-emerald-500 rounded-full flex items-center justify-center text-black font-bold text-xs z-10">
+                          ✓
+                        </div>
+                      )}
+                      <img 
+                        src={p.image} 
+                        alt={p.name} 
+                        className="w-full aspect-square object-contain drop-shadow-2xl mb-3"
+                        referrerPolicy="no-referrer"
+                      />
+                      <div className="text-center">
+                        <p className="font-bold capitalize text-sm truncate">{p.name}</p>
+                        <div className="flex flex-wrap gap-1 justify-center mt-2">
+                          {p.types.map(t => (
+                            <span key={t} className="text-[8px] px-1.5 py-0.5 rounded-full bg-white/10 uppercase tracking-widest">
+                              {t}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    </motion.div>
+                  );
+                })}
+              </div>
+
+              <div className="flex justify-center">
+                <button
+                  onClick={confirmPackSelection}
+                  disabled={selectedPackCards.length !== 3}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white font-black italic uppercase tracking-widest px-12 py-4 rounded-2xl transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed shadow-xl shadow-emerald-900/20"
+                >
+                  Confirm Selection ({selectedPackCards.length}/3)
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Result Overlay */}
       <AnimatePresence>
         {showResult && (
@@ -676,57 +785,82 @@ export default function App() {
               <div className="w-20 h-20 bg-emerald-500 rounded-full flex items-center justify-center mx-auto mb-6 shadow-2xl shadow-emerald-500/20">
                 <Trophy className="w-10 h-10 text-black" />
               </div>
-              <h2 className="text-4xl md:text-5xl font-black italic uppercase tracking-tighter mb-8">Round Results</h2>
+              <h2 className="text-4xl md:text-5xl font-black italic uppercase tracking-tighter mb-8">
+                {room.status === 'FINISHED' ? 'Final Results' : 'Round Results'}
+              </h2>
               
-              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-12">
-                {room.lastPlays?.map((play, idx) => {
-                  const player = room.players.find(p => p.id === play.playerId);
-                  const isWinner = room.lastWinners?.includes(play.playerId);
-                  return (
-                    <div key={idx} className={cn(
-                      "bg-white/5 border rounded-2xl p-4 flex flex-col items-center relative",
-                      isWinner ? "border-emerald-500 shadow-lg shadow-emerald-500/20" : "border-white/10 opacity-70"
-                    )}>
-                      {isWinner && (
-                        <div className="absolute -top-3 -right-3 w-8 h-8 bg-emerald-500 rounded-full flex items-center justify-center shadow-lg">
-                          <Star className="w-4 h-4 text-black" />
-                        </div>
-                      )}
-                      <p className="text-xs font-bold uppercase tracking-widest text-white/60 mb-2 truncate w-full">{player?.name}</p>
-                      {play.skipped || !play.pokemon ? (
-                        <div className="flex-1 flex items-center justify-center py-4">
-                          <p className="text-[10px] font-bold uppercase tracking-widest text-white/30">Skipped</p>
-                        </div>
-                      ) : (
-                        <>
-                          <img src={play.pokemon.image} alt={play.pokemon.name} className="w-20 h-20 object-contain mb-2 drop-shadow-lg" />
-                          <p className="text-[10px] font-bold uppercase tracking-widest text-white/80 truncate w-full">{play.pokemon.name}</p>
-                          <div className="flex gap-1 mt-1 mb-2">
-                            {play.pokemon.types.map(t => (
-                              <div key={t} className="w-1.5 h-1.5 rounded-full bg-emerald-500" title={t} />
-                            ))}
+              {room.status === 'FINISHED' ? (
+                <div className="mb-12">
+                  <h3 className="text-2xl font-bold text-white/50 uppercase tracking-widest mb-6">Overall Winners</h3>
+                  <div className="flex flex-wrap justify-center gap-6">
+                    {(() => {
+                      const maxPoints = Math.max(...room.players.map(p => p.points));
+                      const overallWinners = room.players.filter(p => p.points === maxPoints);
+                      return overallWinners.map(winner => (
+                        <div key={winner.id} className="bg-emerald-500/10 border-2 border-emerald-500 rounded-3xl p-8 flex flex-col items-center shadow-2xl shadow-emerald-500/20">
+                          <div className="w-16 h-16 bg-emerald-500 rounded-full flex items-center justify-center mb-4">
+                            <Star className="w-8 h-8 text-black" />
                           </div>
-                        </>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
+                          <p className="text-3xl font-black italic uppercase tracking-tighter text-white mb-2">{winner.name}</p>
+                          <p className="text-emerald-500 font-bold uppercase tracking-widest">{winner.points} Points</p>
+                        </div>
+                      ));
+                    })()}
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-12">
+                    {room.lastPlays?.map((play, idx) => {
+                      const player = room.players.find(p => p.id === play.playerId);
+                      const isWinner = room.lastWinners?.includes(play.playerId);
+                      return (
+                        <div key={idx} className={cn(
+                          "bg-white/5 border rounded-2xl p-4 flex flex-col items-center relative",
+                          isWinner ? "border-emerald-500 shadow-lg shadow-emerald-500/20" : "border-white/10 opacity-70"
+                        )}>
+                          {isWinner && (
+                            <div className="absolute -top-3 -right-3 w-8 h-8 bg-emerald-500 rounded-full flex items-center justify-center shadow-lg">
+                              <Star className="w-4 h-4 text-black" />
+                            </div>
+                          )}
+                          <p className="text-xs font-bold uppercase tracking-widest text-white/60 mb-2 truncate w-full">{player?.name}</p>
+                          {play.skipped || !play.pokemon ? (
+                            <div className="flex-1 flex items-center justify-center py-4">
+                              <p className="text-[10px] font-bold uppercase tracking-widest text-white/30">Skipped</p>
+                            </div>
+                          ) : (
+                            <>
+                              <img src={play.pokemon.image} alt={play.pokemon.name} className="w-20 h-20 object-contain mb-2 drop-shadow-lg" />
+                              <p className="text-[10px] font-bold uppercase tracking-widest text-white/80 truncate w-full">{play.pokemon.name}</p>
+                              <div className="flex gap-1 mt-1 mb-2">
+                                {play.pokemon.types.map(t => (
+                                  <div key={t} className="w-1.5 h-1.5 rounded-full bg-emerald-500" title={t} />
+                                ))}
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
 
-              <div className="space-y-2 mb-8">
-                {winners.length > 0 ? (
-                  winners.map(wId => {
-                    const winner = room.players.find(p => p.id === wId);
-                    return (
-                      <div key={wId} className="text-2xl font-black italic text-emerald-500 uppercase tracking-tighter">
-                        {winner?.name} Wins!
-                      </div>
-                    );
-                  })
-                ) : (
-                  <div className="text-2xl font-black italic text-red-500 uppercase tracking-tighter">No Winners This Round</div>
-                )}
-              </div>
+                  <div className="space-y-2 mb-8">
+                    {winners.length > 0 ? (
+                      winners.map(wId => {
+                        const winner = room.players.find(p => p.id === wId);
+                        return (
+                          <div key={wId} className="text-2xl font-black italic text-emerald-500 uppercase tracking-tighter">
+                            {winner?.name} Wins!
+                          </div>
+                        );
+                      })
+                    ) : (
+                      <div className="text-2xl font-black italic text-red-500 uppercase tracking-tighter">No Winners This Round</div>
+                    )}
+                  </div>
+                </>
+              )}
 
               <div className="bg-white/5 rounded-3xl p-6 border border-white/10 max-w-md mx-auto">
                 {room.status === 'FINISHED' ? (

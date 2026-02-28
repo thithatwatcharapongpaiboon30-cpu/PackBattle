@@ -57,6 +57,16 @@ export async function getRandomPokemonByType(type: string, count: number): Promi
   return results;
 }
 
+export async function getRandomPokemon(count: number): Promise<Pokemon[]> {
+  const results: Pokemon[] = [];
+  for (let i = 0; i < count; i++) {
+    // Random ID between 1 and 898 (Gen 8 limit to avoid missing sprites)
+    const id = Math.floor(Math.random() * 898) + 1;
+    results.push(await getPokemonData(id));
+  }
+  return results;
+}
+
 export async function getRandomLegendary(count: number): Promise<Pokemon[]> {
   // This is a bit tricky with PokeAPI, let's use a list of legendary IDs or just filter from a range
   // For simplicity, let's pick from a known list of legendary/mythical or just random high IDs
